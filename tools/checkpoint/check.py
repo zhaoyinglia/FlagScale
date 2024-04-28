@@ -8,7 +8,6 @@ import torch
 # # Load Huggingface model.
 # from transformers import MixtralForCausalLM
 
-# model_path = "/share/project/zhaoyingli/Mixtral-8x7B-v0.1/"
 # model = MixtralForCausalLM.from_pretrained(model_path, device_map="cpu")
 
 # for name, val in model.state_dict().items():
@@ -23,8 +22,6 @@ import torch
 # sys.path.insert(0, os.path.join(root_path, "megatron"))
 # from megatron.training.checkpointing import _load_base_checkpoint
 
-# # load_dir="/share/project/zhaoyingli/gitee/ckpt"
-# load_dir="/share/project/zhaoyingli/gitee/convert"
 # state_dict, _, _ = _load_base_checkpoint(load_dir, rank0=True)
 
 # # print(state_dict["args"])
@@ -42,7 +39,7 @@ import torch
 #     print("val:", torch.sum(val), val)
 #     # if name == "decoder.layers.0.self_attention.linear_qkv.bias":
 #     #     print("val:", val)
-#     # else:    
+#     # else:
 #     #     print("val:", torch.sum(val))
 
 
@@ -52,7 +49,6 @@ import torch
 # # Load Huggingface model.
 # from transformers import MistralForCausalLM
 
-# model_path = "/share/project/lijijie/tools/aquila_7b_k73_qwen_mistral/iter_0005000_hf"
 # model = MistralForCausalLM.from_pretrained(model_path, device_map="cpu")
 
 # for name, val in model.state_dict().items():
@@ -65,9 +61,6 @@ import torch
 # # Load Huggingface model.
 # from transformers import AutoModelForCausalLM
 
-# # model_path = "/share/project/ldwang/WorkSpace/mergekit/BAAI/Aquila-7B-K73-4K-3600B-stablelm2-2x8"
-# # model_path = "/share/project/ldwang/WorkSpace/mergekit/BAAI/Aquila-7B-K73-4K-3600B-stablelm2/"
-# model_path = "/share/project/ldwang/tools/aquila_7b_k73_qwen_aquila3_gama_no_cooling/iter_0270000_hf"
 # model = AutoModelForCausalLM.from_pretrained(model_path, device_map="cpu", trust_remote_code=True)
 
 # for name, val in model.state_dict().items():
@@ -91,14 +84,6 @@ import torch
 # sys.path.insert(0, os.path.join(root_path, "megatron"))
 # from megatron.core import mpu
 # from megatron.training.checkpointing import _load_base_checkpoint
-
-# # load_dir="/share/project/zhaoyingli/gitee/aquila_7b_k73_qwen_aquila3_gama_moe"
-# # load_dir="/share/project/zhaoyingli/gitee/ckpt_emu3_7b"
-# # load_dir="/share/project/zhaoyingli/gitee/ckpt_emu3_8x7b"
-# # load_dir="/share/project/zhaoyingli/gitee/ckpt_emu3_12x7b"
-
-# # load_dir="/share/project/zhaoyingli/gitee/finetune"
-# # load_dir="/share/project/zhaoyingli/gitee/ckpt-aquila"
 
 # tp_size = 1
 # pp_size = 8
@@ -145,7 +130,7 @@ import torch
 #             mg_hiddens[layer_idx][name] = kwargs.get('hidden_states')
 #         elif frame == 'mg':
 #             mg_hiddens[layer_idx][name] = args[0]
-    
+
 #     def print_output_hook(module, args, kwargs, output, layer_idx, mode):
 #         frame, name = mode.split('-')
 #         if mode in ['hg-q_proj_out', 'hg-k_proj_out', 'hg-v_proj_out']:
@@ -192,7 +177,7 @@ import torch
 #         layer.self_attn.k_proj.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hg-k_proj_out'), with_kwargs=True)
 #         layer.self_attn.v_proj.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hg-v_proj_out'), with_kwargs=True)
 #         layer.self_attn.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='hg-attn_out'), with_kwargs=True)
-    
+
 #     for idx, layer in enumerate(mgmodel.decoder.layers):
 #         layer.register_forward_pre_hook(partial(print_input_hook, layer_idx=idx, mode='mg-layer_in'), with_kwargs=True)
 #         layer.self_attention.linear_qkv.register_forward_hook(partial(print_output_hook, layer_idx=idx, mode='mg-qkv'), with_kwargs=True)
@@ -201,7 +186,7 @@ import torch
 
 #     input_ids = torch.tensor([[1,2,3]]).long().cuda()
 #     attention_mask, loss_mask, position_ids = get_ltor_masks_and_position_ids(input_ids, -100, True, True, True)
-    
+
 #     with torch.inference_mode():
 #         try:
 #             hgmodel.cuda()
@@ -209,8 +194,8 @@ import torch
 #         except torch.cuda.OutOfMemoryError:
 #             print('oom for huggingface model forward')
 #         hgmodel.cpu()
-#         del hgmodel   
- 
+#         del hgmodel
+
 #     with torch.inference_mode():
 #         try:
 #             mgmodel.cuda()
@@ -237,10 +222,10 @@ import torch
 #     if transformers.__version__ <= '4.33.2':
 #         print('please update transformers')
 #         return
-    
+
 #     if mgtokenizer is None:
 #         return
-        
+
 #     conversation = [
 #         {"role": "user", "content": "what's your name"},
 #         {"role": "bot", "content": "cold"},
