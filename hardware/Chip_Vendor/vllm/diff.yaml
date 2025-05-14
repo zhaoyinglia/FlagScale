@@ -1,6 +1,6 @@
 backends_version:
   vllm: 0.7.2
-commit: 177e7428c0f2ed39fe883bca96c8c2231ab74400
+commit: 5514562633f143894d06c8b6de15d392fccb09ea
 contact: ''
 device_type: Chip_Vendor
 models:
