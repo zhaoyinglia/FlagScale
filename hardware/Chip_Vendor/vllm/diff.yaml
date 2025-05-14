@@ -1,0 +1,9 @@
+backends_version:
+  vllm: 0.7.2
+commit: 1d078ba3221cb34b1616ad1afdf1f1f9e1bd2ded
+contact: ''
+device_type: Chip_Vendor
+models:
+- qwen3
+task:
+- inference
