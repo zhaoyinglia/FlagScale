@@ -35,7 +35,7 @@ def _load_checkpoint(queue, args):
                      os.path.pardir,
                      os.path.pardir))
     sys.path.insert(0, root_path)
-    sys.path.insert(0, os.path.join(root_path, "third_party/Megatron-LM"))
+    sys.path.insert(0, os.path.join(root_path, "flagscale/train"))
 
     if args.megatron_path is not None:
         sys.path.insert(0, args.megatron_path)
@@ -195,7 +195,16 @@ def _load_checkpoint(queue, args):
     # Suppress warning about torch.distributed not being initialized.
     module.MegatronModule.embedding_warning_printed = True
 
-    # fake initializing distributed
+    # fake init torch distributed
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = "29500"
+    torch.distributed.init_process_group(
+        backend="gloo",
+        rank=0,
+        world_size=1,
+    )
+
+    # fake initializing mpu process groups
     tp_size = margs.tensor_model_parallel_size
     pp_size = margs.pipeline_model_parallel_size
     ep_size = margs.expert_model_parallel_size
@@ -229,6 +238,10 @@ def _load_checkpoint(queue, args):
     mpu._EXPERT_DATA_PARALLEL_GROUP = fake_edp_group
     mpu._EXPERT_TENSOR_AND_MODEL_PARALLEL_GROUP = fake_etp_ep_group
     mpu._TENSOR_AND_CONTEXT_PARALLEL_GROUP = fake_tcp_group
+    mpu._EXPERT_TENSOR_PARALLEL_GROUP = fake_tp_group
+    mpu._DATA_PARALLEL_GROUP_WITH_CP = fake_dp_group
+    mpu._INTRA_PARTIAL_DATA_PARALLEL_GROUP_WITH_CP = fake_dp_group
+    mpu._LAST_RANK_WHEN_USING_PIPELINE = pp_size - 1
 
     # fused kernel
     fused_kernels.load(margs)
@@ -322,6 +335,8 @@ def _load_checkpoint(queue, args):
 
     # Get first pipe stage and load ckpt
     mpu.set_pipeline_model_parallel_rank(0)
+    fake_pp_group = _ConverterFakeProcessGroup(rank=0, size=pp_size)
+    mpu._PIPELINE_MODEL_PARALLEL_GROUP = fake_pp_group
     all_models = [get_models(tp_size * ep_size, margs.params_dtype)]
     models = all_models[0][0] # pp0vpp0
 
@@ -344,6 +359,8 @@ def _load_checkpoint(queue, args):
         mpu.set_virtual_pipeline_model_parallel_rank(vp_rank)
         for pp_rank in range(pp_size):
             mpu.set_pipeline_model_parallel_rank(pp_rank)
+            fake_pp_group = _ConverterFakeProcessGroup(rank=pp_rank, size=pp_size)
+            mpu._PIPELINE_MODEL_PARALLEL_GROUP = fake_pp_group
 
             if pp_rank > 0 and vp_rank == 0:
                 all_models.append(get_models(tp_size * ep_size, margs.params_dtype))

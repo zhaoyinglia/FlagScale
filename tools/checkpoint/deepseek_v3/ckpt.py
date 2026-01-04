@@ -113,13 +113,13 @@ def set_attn_ckpt(message, models, layer_id, md, args):
 
     # weight
     if args.q_lora_rank is not None:
-        q_a_weight = torch.chunk(message.pop("q a weight"), tp_size, dim=0)
+        q_a_weight = message.pop("q a weight")
         q_a_norm_weight = message.pop("q a norm weight")
         q_b_weight = torch.chunk(message.pop("q b weight"), tp_size, dim=0)
     else:
         q_weight = torch.chunk(message.pop("q weight"), tp_size, dim=0)
 
-    kv_a_weight = torch.chunk(message.pop("kv a weight"), tp_size, dim=0)
+    kv_a_weight = message.pop("kv a weight")
     kv_a_norm_weight = message.pop("kv a norm weight")
     kv_b_weight = torch.chunk(message.pop("kv b weight"), tp_size, dim=0)
     o_weight = torch.chunk(message.pop("o weight"), tp_size, dim=1)
@@ -137,13 +137,13 @@ def set_attn_ckpt(message, models, layer_id, md, args):
         else:
             tf_layer = model.transformer_layer  # for mtp
         if args.q_lora_rank is not None:
-            tf_layer.self_attention.linear_q_down_proj.weight.data.copy_(q_a_weight[tp_rank])
+            tf_layer.self_attention.linear_q_down_proj.weight.data.copy_(q_a_weight)
             tf_layer.self_attention.linear_q_up_proj.layer_norm_weight.data.copy_(q_a_norm_weight)
             tf_layer.self_attention.linear_q_up_proj.weight.data.copy_(q_b_weight[tp_rank])
         else:
             tf_layer.self_attention.linear_q_proj.weight.data.copy_(q_weight[tp_rank])
 
-        tf_layer.self_attention.linear_kv_down_proj.weight.data.copy_(kv_a_weight[tp_rank])
+        tf_layer.self_attention.linear_kv_down_proj.weight.data.copy_(kv_a_weight)
         tf_layer.self_attention.linear_kv_up_proj.layer_norm_weight.data.copy_(kv_a_norm_weight)
         tf_layer.self_attention.linear_kv_up_proj.weight.data.copy_(kv_b_weight[tp_rank])
         tf_layer.self_attention.linear_proj.weight.data.copy_(o_weight[tp_rank])
@@ -319,10 +319,10 @@ def get_attn_ckpt(message, models, layer_id, args):
     tp_size, _, _, _ = _get_parallel_size(args)
 
     # parallel tensor
-    q_a_weight = []
+    q_a_weight = None
     q_b_weight = []
     q_weight = []
-    kv_a_weight = []
+    kv_a_weight = None
     kv_b_weight = []
     o_weight = []
     # non-parallel tensor
@@ -345,13 +345,13 @@ def get_attn_ckpt(message, models, layer_id, args):
             tf_layer = model.transformer_layer  # for mtp
         # weight
         if args.q_lora_rank is not None:
-            q_a_weight.append(tf_layer.self_attention.linear_q_down_proj.weight.data)
+            q_a_weight = tf_layer.self_attention.linear_q_down_proj.weight.data
             q_a_norm_weight = tf_layer.self_attention.linear_q_up_proj.layer_norm_weight.data
             q_b_weight.append(tf_layer.self_attention.linear_q_up_proj.weight.data)
         else:
             q_weight.append(tf_layer.self_attention.linear_q_proj.weight.data)
 
-        kv_a_weight.append(tf_layer.self_attention.linear_kv_down_proj.weight.data)
+        kv_a_weight = tf_layer.self_attention.linear_kv_down_proj.weight.data
         kv_a_norm_weight = tf_layer.self_attention.linear_kv_up_proj.layer_norm_weight.data
         kv_b_weight.append(tf_layer.self_attention.linear_kv_up_proj.weight.data)
         o_weight.append(tf_layer.self_attention.linear_proj.weight.data)
@@ -362,13 +362,13 @@ def get_attn_ckpt(message, models, layer_id, args):
 
     # weight
     if args.q_lora_rank is not None:
-        message["q a weight"] = torch.cat(q_a_weight, dim=0)
+        message["q a weight"] = q_a_weight
         message["q a norm weight"] = q_a_norm_weight
         message["q b weight"] = torch.cat(q_b_weight, dim=0)
     else:
         message["q weight"] = torch.cat(q_weight, dim=0)
 
-    message["kv a weight"] = torch.cat(kv_a_weight, dim=0)
+    message["kv a weight"] = kv_a_weight
     message["kv a norm weight"] = kv_a_norm_weight
     message["kv b weight"] = torch.cat(kv_b_weight, dim=0)
     message["o weight"] = torch.cat(o_weight, dim=1)

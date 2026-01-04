@@ -70,8 +70,6 @@ try:
 except ImportError:
     has_nvidia_modelopt = False
 
-from flagscale.train.datasets.sft_dataset import SFTDataset, SFTDatasetConfig
-from flagscale.train.extra_valid import extra_valid_datasets_provider
 from flagscale.train.train import pretrain
 
 stimer = StragglerDetector()
@@ -98,14 +96,14 @@ from megatron.training.global_vars import get_tokenizer
 from megatron.training.tokenizer.tokenizer import build_tokenizer
 from tools.datasets.qwenvl.data.dataset_helpers import TaskEncoder, print_error_handler
 
-from flagscale.train.models.qwen2_5_vl.layer_specs import (
+from flagscale.models.megatron_models.qwen2_5_vl.layer_specs import (
     get_gpt_layer_with_transformer_engine_spec,
     get_mlp_module_spec,
     get_qwen2vl_vision_model_spec,
 )
-from flagscale.train.models.qwen2_5_vl.qwen2_5_vl_model import Qwen2_5VLModel
-from flagscale.train.models.qwen2_5_vl.tensor_parallel import broadcast_data
-from flagscale.train.models.qwen2_5_vl.transformer_config import (
+from flagscale.models.megatron_models.qwen2_5_vl.qwen2_5_vl_model import Qwen2_5VLModel
+from flagscale.models.megatron_models.qwen2_5_vl.tensor_parallel import broadcast_data
+from flagscale.models.megatron_models.qwen2_5_vl.transformer_config import (
     get_vision_model_config,
     get_vision_projection_config,
 )

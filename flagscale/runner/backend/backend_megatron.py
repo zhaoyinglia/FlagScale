@@ -72,7 +72,7 @@ class MegatronBackend(BackendBase):
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             )
         assert os.path.exists(root_dir), f"ROOT_DIR {root_dir} does not exist."
-        megatron_dir = os.path.join(root_dir, "third_party", "Megatron-LM")
+        megatron_dir = os.path.join(root_dir, "flagscale", "train")
         cmds_config = config.experiment.get("cmds", None)
         if cmds_config:
             before_start = cmds_config.get("before_start", "")

@@ -112,7 +112,7 @@ def compare_by_recompute(strategy1, strategy2):
 def convert_config_to_megatron_args(config, strategy):
     autotuner_dir = os.path.dirname(__file__)
     great_grandparent_dir = os.path.dirname(os.path.dirname(os.path.dirname(autotuner_dir)))
-    sys.path.insert(0, os.path.join(great_grandparent_dir, "third_party/Megatron-LM"))
+    sys.path.insert(0, os.path.join(great_grandparent_dir, "flagscale/train"))
     from megatron.training.arguments import moe_freq_type
     from megatron.training.tokenizer.tokenizer import _vocab_size_with_padding
 

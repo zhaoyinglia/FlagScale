@@ -24,7 +24,7 @@ from megatron.core.models.gpt.heterogeneous.heterogeneous_layer_specs import (
 from megatron.core.rerun_state_machine import get_rerun_state_machine
 from megatron.core.transformer.spec_utils import import_module
 from megatron.core.utils import StragglerDetector
-from megatron.training import get_args, get_timers, get_tokenizer, pretrain, print_rank_0
+from megatron.training import get_args, get_timers, get_tokenizer, print_rank_0
 from megatron.training.arguments import core_transformer_config_from_args
 from megatron.training.utils import (
     get_batch_on_this_cp_rank,
@@ -45,10 +45,10 @@ try:
 except ImportError:
     has_nvidia_modelopt = False
 
-from flagscale.train.datasets.sft_dataset import SFTDatasetConfig, SFTDataset
-from flagscale.train.extra_valid import extra_valid_datasets_provider
+from megatron.training.datasets.sft_dataset_fs import SFTDatasetConfig, SFTDataset
+from megatron.training.extra_valid import extra_valid_datasets_provider
 from flagscale.train.train import pretrain
-from flagscale.train.global_vars import get_parallel_context
+from megatron.plugin.hetero.parallel_context import get_parallel_context
 
 
 stimer = StragglerDetector()

@@ -4,3 +4,10 @@ flask_restful
 tiktoken
 PyGithub
 aiohttp
+httpx
+multi-storage-client
+boto3
+google-cloud-storage
+fastapi
+uvicorn
+griffe

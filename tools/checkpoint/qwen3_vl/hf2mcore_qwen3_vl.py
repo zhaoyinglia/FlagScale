@@ -29,7 +29,7 @@ path_dir = os.path.abspath(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__)))))
 )
 sys.path.append(path_dir)
-sys.path.append(os.path.join(path_dir, "third_party/Megatron-LM"))
+sys.path.append(os.path.join(path_dir, "flagscale/train"))
 
 from megatron.training import get_args
 from megatron.training.checkpointing import (

@@ -83,7 +83,6 @@ def _get_runner_cmd_train(
     rdzv_endpoint = runner_config.get("rdzv_endpoint", f"{master_addr}:{master_port}")
     redirect = runner_config.get("redirects", "3")
     tee = runner_config.get("tee", "3")
-    backend = runner_config.get("backend", "torchrun")
 
     runner_args = OmegaConf.to_container(runner_config, resolve=True)
     if "type" in runner_args:
@@ -111,11 +110,10 @@ def _get_runner_cmd_train(
     runner_args["rdzv_backend"] = rdzv_backend
     runner_args["rdzv_endpoint"] = rdzv_endpoint
 
-    runner_args["log_dir"] = log_dir if backend == "torchrun" else os.path.join(log_dir, rdzv_id)
-    runner_args["redirects"] = redirect
+    runner_args["log_dir"] = log_dir
     runner_args["tee"] = tee
 
-    runner_cmd = [backend]
+    runner_cmd = ["torchrun"]
     for key, value in runner_args.items():
         if isinstance(value, bool):
             if value:

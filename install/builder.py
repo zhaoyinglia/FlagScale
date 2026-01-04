@@ -414,13 +414,13 @@ def build_megatron_energon(device, root_dir):
         energon_src = os.path.join(
             root_dir, "third_party", "Megatron-Energon", "src", "megatron", "energon"
         )
-        energon_dst = os.path.join(root_dir, "third_party", "Megatron-LM", "megatron", "energon")
+        energon_dst = os.path.join(root_dir, "flagscale", "train", "megatron", "energon")
 
         if not os.path.exists(energon_src):
             raise FileNotFoundError(f"Energon source directory not found: {energon_src}")
 
         # Check if Megatron-LM exists
-        megatron_lm_path = os.path.join(root_dir, "third_party", "Megatron-LM")
+        megatron_lm_path = os.path.join(root_dir, "flagscale", "train")
         if not os.path.exists(megatron_lm_path):
             print(f"[builder] Warning: Megatron-LM not found at {megatron_lm_path}")
             print(f"[builder] Megatron-Energon requires Megatron-LM to be initialized first")
@@ -482,11 +482,11 @@ def build_megatron_lm(device, root_dir):
 def unpatch_backend(backend, device, root_dir):
     if backend == "FlagScale":
         return
+    if backend == "Megatron-LM":
+        return
 
     backend_commit = None
-    if backend == "Megatron-LM":
-        backend_commit = os.getenv(f"FLAGSCALE_MEGATRON_COMMIT", None)
-    elif backend == "Megatron-Energon":
+    if backend == "Megatron-Energon":
         backend_commit = os.getenv(f"FLAGSCALE_ENERGON_COMMIT", None)
     elif backend == "sglang":
         backend_commit = os.getenv(f"FLAGSCALE_SGLANG_COMMIT", None)
@@ -528,6 +528,7 @@ def unpatch_backend(backend, device, root_dir):
     print(f"[build_py] Device {device} initializing the {backend} backend.")
     # backend_commit needs to be in dictionary format {backend_name: commit}
     backend_commit_dict = {backend: backend_commit} if backend_commit else {}
+    fs_extension = True if backend != "Megatron-LM" else False
     unpatch(
         root_dir,
         src,
@@ -535,7 +536,7 @@ def unpatch_backend(backend, device, root_dir):
         backend,
         force=False,
         backend_commit=backend_commit_dict,
-        fs_extension=True,
+        fs_extension=fs_extension,
     )
 
     # Create marker file after successful unpatch

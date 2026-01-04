@@ -20,7 +20,6 @@ from megatron.training import (
     get_timers,
     get_tokenizer,
     inprocess_restart,
-    pretrain,
     print_rank_0,
 )
 from megatron.training.arguments import core_transformer_config_from_args
@@ -31,7 +30,7 @@ from megatron.training.utils import (
     get_blend_and_blend_per_split,
 )
 
-from flagscale.train.models.rwkv import RWKVModel
+from flagscale.models.megatron_models.rwkv.rwkv_model import RWKVModel
 
 try:
     from megatron.post_training.arguments import add_modelopt_args, modelopt_args_enabled

@@ -452,6 +452,7 @@ if __name__ == "__main__":
         for backend in backends:
             dst = os.path.join(main_path, "third_party", backend)
             src = os.path.join(main_path, "flagscale", "backends", backend)
+            new_fs_extension = fs_extension if backend != "Megatron-LM" else False
             unpatch(
                 main_path,
                 src,
@@ -459,5 +460,5 @@ if __name__ == "__main__":
                 backend,
                 force=args.force,
                 backend_commit=backend_commit,
-                fs_extension=fs_extension,
+                fs_extension=new_fs_extension,
             )

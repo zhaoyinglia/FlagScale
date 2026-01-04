@@ -11,11 +11,12 @@ import logging
 import math
 import os
 import sys
-from typing import List, Optional
+from typing import Any, Optional
 
 import torch.distributed
 
 from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
+
 from megatron.training.log_handler import CustomHandler
 
 # Make default logging level INFO, but filter out all log messages not from MCore.
@@ -65,6 +66,7 @@ from megatron.core.distributed import DistributedDataParallelConfig, TorchFullyS
 from megatron.core.distributed import DistributedDataParallel as DDP
 from megatron.core.distributed.fsdp.mcore_fsdp_adapter import FullyShardedDataParallel as megatron_FSDP
 from megatron.core.optimizer.optimizer import param_group_identifier_keys
+from megatron.training.utils import get_megatron_optimizer_config
 
 try:
     from megatron.core.distributed import TorchFullyShardedDataParallel as torch_FSDP
@@ -75,7 +77,7 @@ except ImportError:
 
 from megatron.core.distributed import finalize_model_grads
 from megatron.core.enums import ModelType
-from megatron.core.optimizer import get_megatron_optimizer, OptimizerConfig
+from megatron.core.optimizer import get_megatron_optimizer
 from megatron.core.rerun_state_machine import (
     get_rerun_state_machine,
     destroy_rerun_state_machine,
@@ -86,7 +88,7 @@ from megatron.training.initialize import initialize_megatron
 from megatron.training.initialize import write_args_to_tensorboard
 from megatron.training.initialize import set_jit_fusion_options
 from megatron.training.utils import get_batch_on_this_cp_rank, get_batch_on_this_tp_rank
-from megatron.legacy.data.data_samplers import build_pretraining_data_loader
+from megatron.training.datasets.data_samplers import build_pretraining_data_loader
 from megatron.core.optimizer_param_scheduler import OptimizerParamScheduler
 from megatron.core.transformer.moe import upcycling_utils
 from megatron.core.transformer.moe.moe_utils import track_moe_metrics
@@ -130,12 +132,12 @@ from megatron.training import one_logger_utils
 
 from megatron.training import ft_integration
 
-from flagscale.train.extra_valid import extra_evaluate_and_print_results
-from flagscale.train.extra_valid import build_extra_valid_data_iterators
-from flagscale.train.stablelm2_scheduler import StableLM2SchedulerConfig
-from flagscale.train.global_vars import get_parallel_context, get_spiky_loss_detector
-from flagscale.train.hetero.p2p_communication import get_device_type_for_comm
+from megatron.training.extra_valid import extra_evaluate_and_print_results
+from megatron.training.extra_valid import build_extra_valid_data_iterators
+from megatron.training.stablelm2_scheduler import StableLM2SchedulerConfig
+from megatron.training.global_vars import get_spiky_loss_detector
 from flagscale.train.theoretical_memory_usage import report_theoretical_memory as fs_report_theoretical_memory
+from megatron.plugin.hetero.parallel_context import get_parallel_context
 
 stimer = StragglerDetector()
 
@@ -143,12 +145,6 @@ from megatron.core.msc_utils import MultiStorageClientFeature, open_file
 
 from flagscale.train.peft.peft import PEFT
 from flagscale.train.peft.lora import LoRA
-
-try:
-    import flag_gems
-    HAVE_GEMS = True
-except ImportError:
-    HAVE_GEMS = False
 
 
 def destroy_global_state():
@@ -793,7 +789,7 @@ def pretrain(
         iteration = inprocess_call_wrapper.iteration
         store = torch.distributed.PrefixStore(str(iteration), store)
 
-    # Initalize and get arguments, timers, and Tensorboard writer.
+
     initialize_megatron(
         extra_args_provider=extra_args_provider,
         args_defaults=args_defaults,
@@ -807,8 +803,28 @@ def pretrain(
 
     ###### FlagScale Begin ######
     args = get_args()
-    if args.use_transformer_engine_fl:
-        os.environ['USE_TRANSFORMER_ENGINE_FL'] = "True"
+    # enable flagos:triton / vendor:cuda / reference:torch backend for transformer engine fl
+    if args.te_fl_prefer:
+        os.environ['TE_FL_PREFER'] = args.te_fl_prefer
+    if args.te_fl_per_op:
+        os.environ['TE_FL_PER_OP'] = args.te_fl_per_op
+    if args.te_fl_allow_vendors:
+        os.environ['TE_FL_ALLOW_VENDORS'] = args.te_fl_allow_vendors
+    if args.te_fl_deny_vendors:
+        os.environ['TE_FL_DENY_VENDORS'] = args.te_fl_deny_vendors
+    
+    # enable flag gems to replace torch ops for distributed training
+    # TODO(lixianduo): fix flag gems re-register error
+    if args.enable_flag_gems:
+        try:
+            import flag_gems
+        except ImportError:
+            raise RuntimeError("Failed to import 'flag_gems'. Please install flag_gems.")
+        
+        try:
+            flag_gems.enable(record=True, once=True, unused=args.flag_gems_unused, path=args.flag_gems_log_path)
+        except Exception as e:
+            raise RuntimeError(f"Failed to enable 'flag_gems': {e}.")
     ###### FlagScale End   ######
 
     if args.log_progress:
@@ -1411,26 +1427,20 @@ def setup_model_and_optimizer(
     config = None
     para_ctx = get_parallel_context()
     if para_ctx is not None:
-        config = para_ctx.get_optimizer_config()
+        config, config_overrides = para_ctx.get_optimizer_config()
 
     if config is None:
-        kwargs = {}
-        for f in dataclasses.fields(OptimizerConfig):
-            if hasattr(args, f.name):
-                kwargs[f.name] = getattr(args, f.name)
-        config = OptimizerConfig(**kwargs)
-    ########## FlagScale End ##########
+        config, config_overrides = get_megatron_optimizer_config(args)
     config.timers = timers
+
+    # If the user is asking for a non-zero embedding init std, skip weight decay for embeddings
+    # to avoid embeddings from shrinking to zero as recommended in https://arxiv.org/abs/2312.16903
+    # default_skip_embedding_weight_decay=args.embedding_init_method_std is not None,
     optimizer = get_megatron_optimizer(
         config,
         model,
-        no_wd_decay_cond,
-        scale_lr_cond,
-        lr_mult,
+        config_overrides=config_overrides,
         use_gloo_process_groups=args.enable_gloo_process_groups,
-        # If the user is asking for a non-zero embedding init std, skip weight decay for embeddings
-        #  to avoid embeddings from shrinking to zero as recommended in https://arxiv.org/abs/2312.16903
-        default_skip_embedding_weight_decay=args.embedding_init_method_std is not None,
     )
     opt_param_scheduler = get_optimizer_param_scheduler(optimizer)
     one_logger and one_logger.log_metrics({"app_build_optimzer_finish_time": one_logger_utils.get_timestamp_in_ms()})
@@ -2558,13 +2568,6 @@ def train(
             optimizers=[optimizer],
         )
         cuda_graph_helper.create_cudagraphs()
-
-    # enable flag_gems for transformer_engine_fl
-    if args.use_flag_gems_replace_torch:
-        if not HAVE_GEMS:
-            raise ValueError(f"Can not import flag gems")
-        else:
-            flag_gems.enable(record=True, once=True, unused=args.flag_gems_unused, path=args.flag_gems_log_path)
 
     # Run training iterations till done.
     buffered_rollouts = None

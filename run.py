@@ -8,9 +8,7 @@ from omegaconf import DictConfig, OmegaConf
 from flagscale.logger import logger
 from flagscale.runner.autotuner_factory import AutotunerFactory
 from flagscale.runner.runner_base import Runner
-from flagscale.runner.runner_compress import SSHCompressRunner
 from flagscale.runner.runner_inference import SSHInferenceRunner
-from flagscale.runner.runner_rl import SSHRLRunner
 from flagscale.runner.runner_serve import CloudServeRunner, SSHServeRunner
 from flagscale.runner.runner_train import CloudTrainRunner, SSHTrainRunner
 from flagscale.runner.utils import is_master
@@ -26,9 +24,7 @@ VALID_TASKS = {"train", "inference", "compress", "serve", "rl"}
 LEGACY_RUNNER_MAP = {
     "train": SSHTrainRunner,
     "inference": SSHInferenceRunner,
-    "compress": SSHCompressRunner,
     "serve": SSHServeRunner,
-    "rl": SSHRLRunner,
 }
 
 # task_type -> allowed actions
@@ -83,6 +79,9 @@ def get_runner(config: DictConfig, task_type: str):
         "Using legacy runner, which will be removed in future. Please use new runner instead."
     )
 
+    assert (
+        task_type in LEGACY_RUNNER_MAP
+    ), f"Task type '{task_type}' is not supported by legacy runner"
     return LEGACY_RUNNER_MAP[task_type](config)
 
 

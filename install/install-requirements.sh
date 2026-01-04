@@ -96,6 +96,13 @@ if [ "$env" == "train" ] || [ "$env" == "inference" ]; then
     cd ..
     rm -r ./TransformerEngine
 
+    # Megatron-LM-FL
+    git clone https://github.com/flagos-ai/Megatron-LM-FL.git
+    cd Megatron-LM-FL
+    pip install --no-build-isolation .
+    cd ..
+    rm -r ./Megatron-LM-FL
+
     # cudnn frontend
     uv pip install nvidia-cudnn-cu12==9.7.1.26
     CMAKE_ARGS="-DCMAKE_POLICY_VERSION_MINIMUM=3.5" uv pip install nvidia-cudnn-frontend
@@ -123,7 +130,7 @@ if [ "$env" == "train" ] || [ "$env" == "inference" ]; then
         # Navigate to requirements directory and install basic dependencies
         uv pip install -r ./requirements/train/requirements.txt
         # Unpatch
-        python tools/patch/unpatch.py --backend Megatron-LM
+        # python tools/patch/unpatch.py --backend Megatron-LM
 
         # Navigate to requirements directory and install training dependencies
         uv pip install --no-build-isolation -r ./requirements/train/megatron/requirements-cuda.txt
