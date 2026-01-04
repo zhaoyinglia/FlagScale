@@ -11,6 +11,7 @@ import time
 import traceback
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional, Tuple
 
 import aiohttp
@@ -22,6 +23,12 @@ from tqdm.asyncio import tqdm
 from flagscale.logger import logger
 
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
+
+
+class JobStatus(Enum):
+    RUNNING = "Running"
+    TRANSITIONAL = "Transitional (Stopping or Starting)"
+    COMPLETED_OR_IDLE = "Completed or Not Started"
 
 
 def log_and_raise_error(message):
@@ -487,7 +494,7 @@ def is_master(config, resources=None):
     if resources:
         master = list(resources.keys())[0]
         if is_ip_addr(master):
-            return get_ip_addr() == master
+            return get_ip_addr() in [master, "127.0.0.1"]
         else:
             output = subprocess.run(
                 "hostname", check=True, shell=True, text=True, capture_output=True
