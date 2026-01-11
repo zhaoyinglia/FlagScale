@@ -108,7 +108,7 @@ jobs:
           echo "Home: $HOME"
           whoami
           git config --global --add safe.directory ${GITHUB_WORKSPACE}
-          
+
           TMP_DIR=$(mktemp -d)
           echo "Copying source to temporary directory: $TMP_DIR"
           rm -rf $TMP_DIR

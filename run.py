@@ -2,7 +2,6 @@ import os
 import warnings
 
 import hydra
-
 from omegaconf import DictConfig, OmegaConf
 
 from flagscale.logger import logger
@@ -83,9 +82,9 @@ def get_runner(config: DictConfig, task_type: str):
         "Using legacy runner, which will be removed in future. Please use new runner instead."
     )
 
-    assert (
-        task_type in LEGACY_RUNNER_MAP
-    ), f"Task type '{task_type}' is not supported by legacy runner"
+    assert task_type in LEGACY_RUNNER_MAP, (
+        f"Task type '{task_type}' is not supported by legacy runner"
+    )
     return LEGACY_RUNNER_MAP[task_type](config)
 
 

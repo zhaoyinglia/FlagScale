@@ -55,7 +55,7 @@ jobs:
       subset: ${{ matrix.subset }}
       image: ${{ needs.set-env.outputs.ci_image }}
 
-  # Functional Tests with Mision and Type Matrix
+  # Functional Tests with Mission and Type Matrix
   functional_tests_train:
     needs:
       - set-env

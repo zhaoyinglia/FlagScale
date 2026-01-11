@@ -39,7 +39,7 @@ def _get_args_vllm(config: DictConfig):
     # step3: dict -> yaml
     logging_config = config.inference.logging
     new_config = OmegaConf.create(config_dict)
-    new_conf_file = os.path.join(logging_config.scripts_dir, f"inference.yaml")
+    new_conf_file = os.path.join(logging_config.scripts_dir, "inference.yaml")
 
     # step4: write the new yaml file to `outputs_dir/inference_logs/scripts/inference.yaml`
     with open(new_conf_file, "w") as f:
@@ -94,7 +94,7 @@ def _get_args_sglang(config: DictConfig):
     # step3: dict -> yaml
     logging_config = config.logging
     new_config = OmegaConf.create(config_dict)
-    new_conf_file = os.path.join(logging_config.scripts_dir, f"serve.yaml")
+    new_conf_file = os.path.join(logging_config.scripts_dir, "serve.yaml")
 
     # step4: write the new yaml file to `outputs_dir/serve_logs/scripts/serve.yaml`
     with open(new_conf_file, "w") as f:
@@ -117,7 +117,7 @@ def _update_config_inference(config: DictConfig):
     if config.get("logging", None) is None:
         config.inference.logging = DictConfig({})
 
-    log_dir = os.path.join(exp_dir, f"inference_logs")
+    log_dir = os.path.join(exp_dir, "inference_logs")
     scripts_dir = os.path.join(log_dir, "scripts")
     pids_dir = os.path.join(log_dir, "pids")
 
@@ -186,7 +186,7 @@ def _update_config_serve(config: DictConfig):
                 if cli_engine_args:
                     item.engine_args.update(cli_engine_args)
 
-    log_dir = os.path.join(exp_dir, f"serve_logs")
+    log_dir = os.path.join(exp_dir, "serve_logs")
     scripts_dir = os.path.join(log_dir, "scripts")
     pids_dir = os.path.join(log_dir, "pids")
 
@@ -202,9 +202,9 @@ class VllmBackend(BackendBase):
     def __init__(self, config: DictConfig):
         super().__init__(config)
         self.task_type = getattr(self.config.experiment.task, "type", None)
-        assert (
-            self.task_type == "inference" or self.task_type == "serve"
-        ), f"Unsupported task type: {self.task_type}"
+        assert self.task_type == "inference" or self.task_type == "serve", (
+            f"Unsupported task type: {self.task_type}"
+        )
         self._prepare()
 
     def _prepare(self):
@@ -255,12 +255,11 @@ class VllmBackend(BackendBase):
 
     def generate_run_script(self, config, host, node_rank, cmd, background=True, with_test=False):
         if self.task_type == "inference":
-
             logging_config = config.inference.logging
 
             no_shared_fs = config.experiment.runner.get("no_shared_fs", False)
             if no_shared_fs:
-                host_output_file = os.path.join(logging_config.log_dir, f"host.output")
+                host_output_file = os.path.join(logging_config.log_dir, "host.output")
             else:
                 host_output_file = os.path.join(
                     logging_config.log_dir, f"host_{node_rank}_{host}.output"
@@ -286,13 +285,13 @@ class VllmBackend(BackendBase):
                 f.write(f"{before_start}\n")
                 f.write(f"mkdir -p {logging_config.log_dir}\n")
                 f.write(f"mkdir -p {logging_config.pids_dir}\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f"cd {root_dir}\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f"export PYTHONPATH={root_dir}:${{PYTHONPATH}}\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f'cmd="{cmd}"\n')
-                f.write(f"\n")
+                f.write("\n")
                 if with_test:
                     f.write(f'bash -c "$cmd; sync"  >> {host_output_file} \n')
                 else:
@@ -314,7 +313,7 @@ class VllmBackend(BackendBase):
 
             no_shared_fs = config.experiment.runner.get("no_shared_fs", False)
             if no_shared_fs:
-                host_output_file = os.path.join(logging_config.log_dir, f"host.output")
+                host_output_file = os.path.join(logging_config.log_dir, "host.output")
             else:
                 host_output_file = os.path.join(
                     logging_config.log_dir, f"host_{node_rank}_{host}.output"
@@ -341,25 +340,25 @@ class VllmBackend(BackendBase):
                 import vllm
 
                 vllm_path = os.path.dirname(vllm.__path__[0])
-            except Exception as e:
+            except Exception:
                 vllm_path = f"{root_dir}/vllm"
             deploy_config = config.experiment.get("runner", {}).get("deploy", {})
             envs = config.experiment.get("envs", {})
             with open(host_run_script_file, "w") as f:
                 f.write("#!/bin/bash\n\n")
                 f.write("set -x\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f"{before_start_cmd}\n")
-                f.write(f"\n")
+                f.write("\n")
 
-                f.write(f'if [ -z "$PYTHONPATH" ]; then\n')
+                f.write('if [ -z "$PYTHONPATH" ]; then\n')
                 f.write(f"    export PYTHONPATH={vllm_path}:{root_dir}\n")
-                f.write(f"else\n")
+                f.write("else\n")
                 f.write(f'    export PYTHONPATH="$PYTHONPATH:{vllm_path}:{root_dir}"\n')
-                f.write(f"fi\n")
-                f.write(f"\n")
+                f.write("fi\n")
+                f.write("\n")
                 envs_str = " && ".join(
-                    f"export {key}={value}" for key, value in envs.items() if key != 'nodes_envs'
+                    f"export {key}={value}" for key, value in envs.items() if key != "nodes_envs"
                 )
                 f.write(f"{envs_str}\n")
                 use_vllm_v1 = (str(os.getenv("VLLM_USE_V1", "true")).lower() in ("1", "true")) and (
@@ -377,7 +376,7 @@ class VllmBackend(BackendBase):
                         kv_related_ports = _get_multiple_free_ports(ports_num)
                         pd_proxy_port = deploy_config.get("pd_proxy_port", None)
                         if not pd_proxy_port:
-                            raise ValueError(f"PD disaggregation requires a proxy port to be set.")
+                            raise ValueError("PD disaggregation requires a proxy port to be set.")
 
                         engine_args = _get_serve_engine_args(config)
                         command_items = ["vllm", "serve"]
@@ -398,7 +397,7 @@ class VllmBackend(BackendBase):
                             "prefill_decode_log_dir", logging_config.log_dir
                         )
 
-                        f.write(f"# clean nodes \n")
+                        f.write("# clean nodes \n")
                         if len(nodes) > 1:
                             for ip, node in nodes[1:]:
                                 if not node.get("type", None):
@@ -422,7 +421,7 @@ class VllmBackend(BackendBase):
                         f.write("pkill -f 'vllm serve'\n")
                         f.write("pkill -f 'run_disagg_xpyd_router'\n")
                         f.write(f"mkdir -p {default_log_dir}\n")
-                        f.write(f"\n")
+                        f.write("\n")
 
                         f.write("echo '=========== launch prefill instance ==========='\n")
 
@@ -466,8 +465,8 @@ class VllmBackend(BackendBase):
                             p_instance_log_path = os.path.join(default_log_dir, f"prefill_{i}.log")
 
                             if update_p_address != master_ip and len(nodes) > 1:
-                                p_kv_config_formate_json = p_kv_config_json.replace('"', '\\"')
-                                node_cmd = f"{ids_env} && {vllm_command} --port {http_port} --kv-transfer-config '\\''{p_kv_config_formate_json}'\\''"
+                                p_kv_config_format_json = p_kv_config_json.replace('"', '\\"')
+                                node_cmd = f"{ids_env} && {vllm_command} --port {http_port} --kv-transfer-config '\\''{p_kv_config_format_json}'\\''"
                                 if docker_name:
                                     ssh_cmd = f"ssh -f -n -p {ssh_port} {update_p_address} \"docker exec {docker_name} /bin/bash -c '{node_cmd} > {p_instance_log_path} 2>&1 &'\""
                                 else:
@@ -476,7 +475,7 @@ class VllmBackend(BackendBase):
                             else:
                                 p_cmd = f"{ids_env} && {vllm_command} --port {http_port} --kv-transfer-config '\\''{p_kv_config_json}'\\''"
                                 f.write(f"p_{i}_cmd='{p_cmd}'\n")
-                                f.write(f"\n")
+                                f.write("\n")
                                 f.write(
                                     f'nohup bash -c "$p_{i}_cmd; sync" >> {p_instance_log_path} 2>&1 &\n\n'
                                 )
@@ -525,8 +524,8 @@ class VllmBackend(BackendBase):
                             d_instance_log_path = os.path.join(default_log_dir, f"decode_{j}.log")
 
                             if update_d_address != master_ip and len(nodes) > 1:
-                                d_kv_config_formate_json = d_kv_config_json.replace('"', '\\"')
-                                node_cmd = f"{ids_env} && {vllm_command} --port {http_port} --gpu-memory-utilization {decode_gpu_memory_utilization} --kv-transfer-config '\\''{d_kv_config_formate_json}'\\''"
+                                d_kv_config_format_json = d_kv_config_json.replace('"', '\\"')
+                                node_cmd = f"{ids_env} && {vllm_command} --port {http_port} --gpu-memory-utilization {decode_gpu_memory_utilization} --kv-transfer-config '\\''{d_kv_config_format_json}'\\''"
                                 if docker_name:
                                     ssh_cmd = f"ssh -f -n -p {ssh_port} {update_d_address} \"docker exec {docker_name} /bin/bash -c '{node_cmd} > {d_instance_log_path} 2>&1 &'\""
                                 else:
@@ -535,19 +534,17 @@ class VllmBackend(BackendBase):
                             else:
                                 d_cmd = f"{ids_env} && {vllm_command} --port {http_port} --gpu-memory-utilization {decode_gpu_memory_utilization} --kv-transfer-config '\\''{d_kv_config_json}'\\''"
                                 f.write(f"d_{j}_cmd='{d_cmd}'\n")
-                                f.write(f"\n")
+                                f.write("\n")
                                 f.write(
                                     f'nohup bash -c "$d_{j}_cmd; sync" >> {d_instance_log_path} 2>&1 &\n\n'
                                 )
 
                     else:
-                        engine = _get_serve_engine(config)
-
-                        f.write(f"ray_path=$(realpath $(which ray))\n")
+                        f.write("ray_path=$(realpath $(which ray))\n")
                         master_ip = nodes[0][0]
                         target_port = nodes[0][1].get("port")
 
-                        f.write(f"# clean nodes \n")
+                        f.write("# clean nodes \n")
                         if len(nodes) > 1:
                             for ip, node in nodes[1:]:
                                 if not node.get("type", None):
@@ -558,7 +555,7 @@ class VllmBackend(BackendBase):
                                     raise ValueError(
                                         f"Number of slots must be specified for node {node}. This can be done by setting the 'slots' attribute."
                                     )
-                                node_cmd = f"${{ray_path}} stop"
+                                node_cmd = "${ray_path} stop"
 
                                 if before_start_cmd:
                                     node_cmd = f"{before_start_cmd} && " + node_cmd
@@ -573,17 +570,16 @@ class VllmBackend(BackendBase):
                         if before_start_cmd:
                             f.write(f"{before_start_cmd} && ${{ray_path}} stop\n")
                         else:
-                            f.write(f"${{ray_path}} stop\n")
+                            f.write("${ray_path} stop\n")
                         f.write("pkill -f 'run_inference_engine'\n")
                         f.write("pkill -f 'run_fs_serve_vllm'\n")
                         f.write("pkill -f 'vllm serve'\n")
-                        f.write(f"\n")
+                        f.write("\n")
 
                         master_port = target_port if target_port else get_free_port()
 
                         address = f"{master_ip}:{master_port}"
                         nodes_envs = config.experiment.get("envs", {}).get("nodes_envs", {})
-                        node_args = config.experiment.get("node_args", {})
                         for index, (ip, node) in enumerate(nodes):
                             per_node_cmd = None
                             if nodes_envs and nodes_envs.get(ip, None) is not None:
@@ -601,16 +597,14 @@ class VllmBackend(BackendBase):
 
                             if index == 0:
                                 # master node
-                                f.write(f"# start cluster\n")
-                                f.write(f"# master node\n")
+                                f.write("# start cluster\n")
+                                f.write("# master node\n")
                                 if node.type == "gpu":
                                     node_cmd = f"${{ray_path}} start --head --port={master_port} --num-gpus={node.slots}"
                                 elif node.type == "cpu":
                                     node_cmd = f"${{ray_path}} start --head --port={master_port} --num-cpus={node.slots}"
                                 else:
-                                    resource = json.dumps({node.type: node.slots}).replace(
-                                        '"', '\"'
-                                    )
+                                    resource = json.dumps({node.type: node.slots}).replace('"', '"')
                                     node_cmd = f"${{ray_path}} start --head --port={master_port} --resources='{resource}'"
                                 if per_node_cmd:
                                     node_cmd = f"{per_node_cmd} && " + node_cmd
@@ -620,8 +614,8 @@ class VllmBackend(BackendBase):
                             else:
                                 # worker nodes
                                 if index == 1:
-                                    f.write(f"\n")
-                                    f.write(f"# worker nodes\n")
+                                    f.write("\n")
+                                    f.write("# worker nodes\n")
                                 if node.type == "gpu":
                                     node_cmd = f"${{ray_path}} start --address={address} --num-gpus={node.slots}"
 
@@ -660,9 +654,9 @@ class VllmBackend(BackendBase):
                     if deploy_config.get("use_fs_serve", True) and config.serve[0].get(
                         "engine", None
                     ):
-                        f.write(f"ray_path=$(realpath $(which ray))\n")
+                        f.write("ray_path=$(realpath $(which ray))\n")
                         if not device_type:
-                            node_cmd = f"${{ray_path}} start --head"
+                            node_cmd = "${ray_path} start --head"
                         elif device_type == "gpu":
                             node_cmd = f"${{ray_path}} start --head --num-gpus={nproc_per_node}"
                         elif device_type == "cpu":
@@ -679,11 +673,11 @@ class VllmBackend(BackendBase):
 
                 f.write(f"mkdir -p {logging_config.log_dir}\n")
                 f.write(f"mkdir -p {logging_config.pids_dir}\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f"cd {root_dir}\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f'cmd="{cmd}"\n')
-                f.write(f"\n")
+                f.write("\n")
                 # TODO: need a option to control whether to append or overwrite the output file
                 # Now, it always appends to the output file
                 f.write("echo '=========== launch task ==========='\n")
@@ -761,18 +755,18 @@ class VllmBackend(BackendBase):
             with open(host_stop_script_file, "w") as f:
                 f.write("#!/bin/bash\n\n")
                 f.write("set -x\n")
-                f.write(f"\n")
+                f.write("\n")
                 f.write(f"{before_start_cmd}\n")
-                f.write(f"\n")
+                f.write("\n")
                 envs_str = " && ".join(f"export {key}={value}" for key, value in envs.items())
                 f.write(f"{envs_str}\n")
 
                 if nodes:
                     if deploy_config.get("prefill_decode_disaggregation", False):
-                        f.write(f"# clean nodes \n")
+                        f.write("# clean nodes \n")
                         if len(nodes) > 1:
                             for ip, node in nodes[1:]:
-                                node_cmd = f"pkill -f vllm && pkill -f python"
+                                node_cmd = "pkill -f vllm && pkill -f python"
                                 ssh_cmd = f'ssh -n -p {ssh_port} {ip} "{node_cmd}"'
                                 if docker_name:
                                     ssh_cmd = f"ssh -n -p {ssh_port} {ip} \"docker exec {docker_name} /bin/bash -c '{node_cmd}'\""
@@ -782,14 +776,14 @@ class VllmBackend(BackendBase):
                         f.write("pkill -f 'run_fs_serve_vllm'\n")
                         f.write("pkill -f 'vllm serve'\n")
                         f.write("pkill -f 'run_disagg_xpyd_router'\n")
-                        f.write(f"\n")
+                        f.write("\n")
 
                     else:
-                        f.write(f"ray_path=$(realpath $(which ray))\n")
-                        f.write(f"# clean nodes \n")
+                        f.write("ray_path=$(realpath $(which ray))\n")
+                        f.write("# clean nodes \n")
                         if len(nodes) > 1:
                             for ip, node in nodes[1:]:
-                                node_cmd = f"${{ray_path}} stop && pkill -f python"
+                                node_cmd = "${ray_path} stop && pkill -f python"
                                 if before_start_cmd:
                                     node_cmd = f"{before_start_cmd} && " + node_cmd
                                 if envs_str:
@@ -803,19 +797,19 @@ class VllmBackend(BackendBase):
                         if before_start_cmd:
                             f.write(f"{before_start_cmd} && ${{ray_path}} stop\n")
                         else:
-                            f.write(f"${{ray_path}} stop\n")
+                            f.write("${ray_path} stop\n")
                         f.write("pkill -f 'run_inference_engine'\n")
                         f.write("pkill -f 'run_fs_serve_vllm'\n")
                         f.write("pkill -f 'vllm serve'\n")
                         f.write("pkill -f multiprocessing\n")
-                        f.write(f"\n")
+                        f.write("\n")
                 else:
                     node_cmd = None
                     if deploy_config.get("use_fs_serve", True) and config.serve[0].get(
                         "engine", None
                     ):
-                        f.write(f"ray_path=$(realpath $(which ray))\n")
-                        node_cmd = f"${{ray_path}} stop"
+                        f.write("ray_path=$(realpath $(which ray))\n")
+                        node_cmd = "${ray_path} stop"
                     if before_start_cmd:
                         node_cmd = (
                             f"{before_start_cmd} && {node_cmd}" if node_cmd else before_start_cmd
