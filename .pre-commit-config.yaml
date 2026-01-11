@@ -7,6 +7,12 @@ exclude: |
         tools/checkpoint/saver.*\.py|
         examples/aquila/tokenizer*|
     )$
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+default_stages:
+  - pre-commit # Run locally
+  - manual # Run in CI
 repos:
 -   repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
