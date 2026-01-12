@@ -90,7 +90,7 @@ class TestLogCollector:
                 "flagscale.runner.elastic.log_collector.run_local_command"
             ) as mock_run_local_command,
         ):
-            # result = collect_logs(mock_config, "localhost", 0, "/tmp/dest", dryrun=False)
+            collect_logs(mock_config, "localhost", 0, "/tmp/dest", dryrun=False)
 
             mock_run_local_command.assert_called()
             args, kwargs = mock_run_local_command.call_args
@@ -115,9 +115,7 @@ class TestLogCollector:
                 "flagscale.runner.elastic.log_collector.run_local_command"
             ) as mock_run_local_command,
         ):
-            # result = collect_logs(
-            #     mock_config_no_shared_fs, "localhost", 0, "/tmp/dest", dryrun=False
-            # )
+            collect_logs(mock_config_no_shared_fs, "localhost", 0, "/tmp/dest", dryrun=False)
 
             mock_run_local_command.assert_called()
 
@@ -173,9 +171,7 @@ class TestLogCollector:
                 "flagscale.runner.elastic.log_collector.run_local_command"
             ) as mock_run_local_command,
         ):
-            # result = collect_logs(
-            #     mock_config, "localhost", 0, "/tmp/dest", dryrun=True
-            # )
+            collect_logs(mock_config, "localhost", 0, "/tmp/dest", dryrun=True)
 
             # Verify that run_local_command was called with dryrun=True
             mock_run_local_command.assert_called()
