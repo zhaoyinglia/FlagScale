@@ -153,6 +153,8 @@ from megatron.core.pipeline_parallel.utils import (
     is_pp_last_stage,
     is_vp_first_stage,
     is_vp_last_stage,
+    is_dualpipev_first_stage,
+    is_dualpipev_last_stage,
 )
 from megatron.core.optimizer import get_mup_config_overrides, get_standard_config_overrides
 from megatron.training.checkpointing import load_checkpoint
@@ -1657,10 +1659,13 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
                 model.append(this_model)
         elif args.use_dualpipev:
             model = []
-
             for i in range(2):
-                pre_process = is_pp_first_stage(pg_collection.pp) and i == 0
-                post_process = is_pp_first_stage(pg_collection.pp) and i == 1
+                pre_process = is_pp_first_stage(pg_collection.pp) and is_dualpipev_first_stage(
+                    dualpipev_stage=i, dualpipev_size=2
+                )
+                post_process = is_pp_first_stage(pg_collection.pp) and is_dualpipev_last_stage(
+                    dualpipev_stage=i, dualpipev_size=2
+                )
                 this_model = model_provider_func(
                     pre_process=pre_process,
                     post_process=post_process,
