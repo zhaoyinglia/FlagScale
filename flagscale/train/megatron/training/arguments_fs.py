@@ -337,10 +337,6 @@ class FSTrainArguments:
                 "DualPipeV can only be used for pipeline scheduling in MoE models, "
                 "thus requiring both pipeline parallelism and expert parallelism."
             )
-            # assert args.expert_model_parallel_size > 1, (
-            #     "DualPipeV can only be used for pipeline scheduling in MoE models, "
-            #     "thus requiring both pipeline parallelism and expert parallelism."
-            # )
             args.dualpipev_pipeline_model_parallel_size = 2
 
             middle_stage_layers = args.num_layers

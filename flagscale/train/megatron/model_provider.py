@@ -59,8 +59,7 @@ def model_provider(
     if has_nvidia_modelopt and getattr(args, 'modelopt_enabled', False):
         # [ModelOpt]: Use custom builder + spec when modelopt is enabled
         model_builder = modelopt_gpt_mamba_builder
-        if args.use_dualpipev:
-            raise ValueError("")
+        assert not args.use_dualpipev
 
     return model_builder(args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection, dualpipev_stage=dualpipev_stage)
 

@@ -1490,8 +1490,6 @@ def get_model(model_provider_func, model_type=ModelType.encoder_or_decoder, wrap
     else:
         model = build_model()
 
-    print(f"{model=}")
-
     if not isinstance(model, list):
         model = [model]
 
