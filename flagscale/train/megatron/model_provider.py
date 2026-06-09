@@ -61,8 +61,9 @@ def model_provider(
         model_builder = modelopt_gpt_mamba_builder
         assert not args.use_dualpipev
 
-    return model_builder(args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection, dualpipev_stage=dualpipev_stage)
-
+    if dualpipev_stage:
+        return model_builder(args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection, dualpipev_stage=dualpipev_stage)
+    return model_builder(args, pre_process, post_process, vp_stage, config=config, pg_collection=pg_collection)
 
 def count_parameters_in_layer(model, layer_name):
     num_params = 0
