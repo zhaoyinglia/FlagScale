@@ -260,6 +260,8 @@ from megatron.plugin.hetero.parallel_context import get_parallel_context
 
 from megatron.plugin.platform import get_platform
 cur_platform = get_platform()
+
+import megatron.plugin_flagscale
 ########## FlagScale End ##########
 
 stimer = StragglerDetector()
