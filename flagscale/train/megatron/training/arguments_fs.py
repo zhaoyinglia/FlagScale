@@ -243,6 +243,11 @@ class FSTrainArguments:
 
                 accumulated_world_size += temp_world_size
                 current_process_mesh_idx += 1
+        # DeepSeek-V4 Temporary
+        if self.args.enable_hyper_connections:
+            assert not self.args.overlap_moe_expert_parallel_comm, "Hyper-connection is not supported with overlap_moe_expert_parallel_comm yet!"
+        if self.args.experimental_attention_variant == "dsv4_hybrid":
+            assert self.args.context_parallel_size == 1, "Context parallelism is not supported with dsv4_hybrid attention variant yet!"
 
     def post_validate_args(self):
         """Post-validate the arguments after Megatron function `validate_args`."""
@@ -332,10 +337,7 @@ class FSTrainArguments:
                 "DualPipeV can only be used for pipeline scheduling in MoE models, "
                 "thus requiring both pipeline parallelism and expert parallelism."
             )
-            assert args.expert_model_parallel_size > 1, (
-                "DualPipeV can only be used for pipeline scheduling in MoE models, "
-                "thus requiring both pipeline parallelism and expert parallelism."
-            )
+            args.dualpipev_pipeline_model_parallel_size = 2
 
             middle_stage_layers = args.num_layers
             num_middle_stages = args.pipeline_model_parallel_size
@@ -811,6 +813,11 @@ def _add_distributed_args(parser):
         action='store_true',
         help='Indicate whether not running on a shared file system.',
     )
+    group.add_argument(
+        '--use-padded-layerwise-optimizer',
+        action='store_true',
+        help='Enable pad when use layer-wise optimizer.'
+    )
     return parser
 
 
@@ -882,6 +889,139 @@ def _add_vision_args(parser):
     )
     return parser
 
+def _add_straggler_args(parser):
+    group = parser.add_argument_group(title="flagscale straggler")
+
+    group.add_argument(
+        "--enable-straggler-detection",
+        action="store_true",
+        default=False,
+        help="Enable FlagScale straggler detection.",
+    )
+    group.add_argument(
+        "--straggler-profiling-interval",
+        type=int,
+        default=10,
+        help="Record straggler samples every N steps after warmup.",
+    )
+    group.add_argument(
+        "--straggler-report-interval",
+        type=int,
+        default=100,
+        help="Generate a straggler report every N steps.",
+    )
+    group.add_argument(
+        "--straggler-threshold",
+        type=float,
+        default=1.5,
+        help="Slowdown ratio used to mark a rank as a straggler.",
+    )
+    group.add_argument(
+        "--straggler-warmup-steps",
+        type=int,
+        default=10,
+        help="Skip the first N steps before profiling stragglers.",
+    )
+    group.add_argument(
+        "--straggler-enable-comm-logging",
+        dest="straggler_enable_comm_logging",
+        action="store_true",
+        help="Enable communication logging in the FlagScale straggler detector.",
+    )
+    group.add_argument(
+        "--no-straggler-enable-comm-logging",
+        dest="straggler_enable_comm_logging",
+        action="store_false",
+        help="Disable communication logging in the FlagScale straggler detector.",
+    )
+    group.set_defaults(straggler_enable_comm_logging=True)
+    group.add_argument(
+        "--straggler-enable-gpu-profile",
+        dest="straggler_enable_gpu_profile",
+        action="store_true",
+        help="Enable CUDA event timing for straggler profiling when available.",
+    )
+    group.add_argument(
+        "--no-straggler-enable-gpu-profile",
+        dest="straggler_enable_gpu_profile",
+        action="store_false",
+        help="Disable CUDA event timing for straggler profiling.",
+    )
+    group.set_defaults(straggler_enable_gpu_profile=True)
+    group.add_argument(
+        "--straggler-log-dir",
+        type=str,
+        default=None,
+        help="Directory used to save FlagScale straggler reports.",
+    )
+    return parser
+def _add_perf_monitor_args(parser):
+    group = parser.add_argument_group(title="flagscale perf monitor")
+
+    group.add_argument(
+        "--enable-perf-monitor",
+        action="store_true",
+        default=False,
+        help="Enable FlagScale performance monitoring during training.",
+    )
+    group.add_argument(
+        "--perf-log-interval",
+        type=int,
+        default=10,
+        help="Log performance metrics every N iterations.",
+    )
+    group.add_argument(
+        "--perf-log-dir",
+        type=str,
+        default=None,
+        help="Directory used to save performance monitor logs.",
+    )
+    group.add_argument(
+        "--perf-console-output",
+        action="store_true",
+        default=False,
+        help="Also emit performance monitor logs to stdout on rank 0.",
+    )
+    group.add_argument(
+        "--perf-log-format",
+        type=str,
+        choices=["text", "json", "both"],
+        default="both",
+        help="Output format for performance monitor files.",
+    )
+    group.add_argument(
+        "--perf-memory-tracking",
+        dest="perf_memory_tracking",
+        action="store_true",
+        help="Track CUDA memory usage in the performance monitor.",
+    )
+    group.add_argument(
+        "--no-perf-memory-tracking",
+        dest="perf_memory_tracking",
+        action="store_false",
+        help="Disable CUDA memory tracking in the performance monitor.",
+    )
+    group.set_defaults(perf_memory_tracking=True)
+    group.add_argument(
+        "--perf-breakdown",
+        action="store_true",
+        default=False,
+        help="Include estimated component breakdowns in performance logs.",
+    )
+    group.add_argument(
+        "--perf-max-log-files",
+        type=int,
+        default=10,
+        help="Maximum number of historical performance log files to keep.",
+    )
+    group.add_argument(
+        "--perf-model-type",
+        type=str,
+        choices=["auto", "gpt", "llama", "qwen", "mixtral", "aquila", "moe"],
+        default="auto",
+        help="Model type hint used for FLOPS estimation.",
+    )
+    return parser
 
 def _add_flagos_args(parser):
     group = parser.add_argument_group(title="flagscale fl")
@@ -931,81 +1071,6 @@ def _add_flagos_args(parser):
     return parser
 
 
-def _add_engram_args(parser):
-    group = parser.add_argument_group(title="flagscale engram")
-    group.add_argument('--use-engram', action='store_true', help='Use Engram module.')
-    group.add_argument(
-        '--engram-tokenizer-name-or-path',
-        type=str,
-        default=None,
-        help='Tokenizer name or path used by Engram',
-    )
-    group.add_argument(
-        '--engram-vocab-size',
-        nargs='*',
-        type=int,
-        default=None,
-        help='Engram vocab size per layer (list of ints)',
-    )
-    group.add_argument(
-        '--max-ngram-size', type=int, default=1, help='Maximum n-gram size for Engram'
-    )
-    group.add_argument(
-        '--n-embed-per-ngram',
-        type=int,
-        default=None,
-        help='Embedding dimension per n-gram',
-    )
-    group.add_argument(
-        '--n-head-per-ngram', type=int, default=1, help='Number of heads per n-gram'
-    )
-    group.add_argument(
-        '--engram-layer-ids',
-        nargs='*',
-        type=int,
-        default=None,
-        help='Layer ids where Engram is applied',
-    )
-    group.add_argument(
-        '--engram-pad-id', type=int, default=0, help='Pad token id for Engram hashing'
-    )
-    group.add_argument(
-        '--engram-seed', type=int, default=0, help='Random seed for Engram hashing'
-    )
-    group.add_argument(
-        '--engram-kernel-size',
-        type=int,
-        default=1,
-        help='Kernel size for Engram short convolution',
-    )
-    group.add_argument(
-        '--engram-hc-mult',
-        type=int,
-        default=1,
-        help='Hyper-connection multiplicity for Engram',
-    )
-    group.add_argument(
-        '--engram-embedding-parallel-size',
-        type=int,
-        default=1,
-        help='Parallel size for Engram embedding',
-    )
-    group.add_argument(
-        '--engram-embedding-parallel-method',
-        type=str,
-        default="alltoall",
-        choices=["alltoall", "allreduce"],
-        help='Parallel method for Engram embedding across embedding parallel(alltoall) / tensor parallel(allreduce) groups',
-    )
-    group.add_argument(
-        "--engram-offload-embedding-optimizer-states",
-        action="store_true",
-        help="Whether to offload Engram embedding optimizer states to CPU when using alltoall for Engram embedding parallelism. "
-        "This is typically used to save GPU memory when Engram embedding is large while accelerators are limited.",
-    )
-    return parser
-
-
 def _add_flagscale_specific_args(parser):
     """Add FlagScale-specific arguments that don't fit in other categories."""
     group = parser.add_argument_group(title='flagscale specific')
@@ -1043,7 +1108,8 @@ def add_flagscale_arguments(parser):
     parser = _add_auto_tuner_args(parser)
     parser = _add_auto_skip_spiky_loss(parser)
     parser = _add_peft_args(parser)
+    parser = _add_straggler_args(parser)
     parser = _add_flagos_args(parser)
-    parser = _add_engram_args(parser)
     parser = _add_flagscale_specific_args(parser)
+    parser = _add_perf_monitor_args(parser)
     return parser
