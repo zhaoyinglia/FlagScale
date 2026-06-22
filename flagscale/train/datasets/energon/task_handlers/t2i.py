@@ -4,7 +4,7 @@ from typing import Dict, Any
 
 from .base import BaseTaskHandler
 
-from flagscale.train.megatron.bagel_energon.data_utils import pil_img2rgb
+from flagscale.train.datasets.energon.data_utils import pil_img2rgb
 
 
 class T2IHandler(BaseTaskHandler):

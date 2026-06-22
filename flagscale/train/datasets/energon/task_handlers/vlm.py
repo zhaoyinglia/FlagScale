@@ -3,10 +3,10 @@ import json
 from PIL import Image
 from typing import Dict, List
 
-from .base import BaseTaskHandler
+from flagscale.train.datasets.energon.data_utils import pil_img2rgb
+from flagscale.train.datasets.energon.sample_types import BagelSample
 
-from flagscale.train.megatron.bagel_energon.data_utils import pil_img2rgb
-from flagscale.train.megatron.bagel_energon.sample_types import BagelSample
+from flagscale.train.datasets.energon.task_handlers.base import BaseTaskHandler
 
 
 class VLMHandler(BaseTaskHandler):

@@ -31,9 +31,7 @@ from flagscale.models.megatron.bagel.bagel_model import BagelModel
 from flagscale.models.megatron.bagel.bagel_spec import get_bagel_layer_with_transformer_engine_spec, get_mlp_module_spec
 from flagscale.train.megatron.training.multimodal_args import add_multimodal_extra_args
 from flagscale.models.megatron.bagel.config import get_vision_model_config, get_language_model_config
-from flagscale.train.megatron.bagel_energon.task_encoder import BagelTaskEncoder, BagelDataConfig
-from flagscale.train.megatron.bagel_energon.sample_types import BagelPackedBatch
-from flagscale.train.megatron.bagel_energon.energon_bagel_task_encoder import bagel_vlm_dataloader_provider
+from flagscale.train.datasets.energon.energon_bagel_task_encoder import bagel_vlm_dataloader_provider
 
 
 _DATASET_PROVIDERS = {

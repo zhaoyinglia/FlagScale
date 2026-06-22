@@ -28,15 +28,14 @@ from megatron.energon import (
     get_val_datasets,
 )
 
-from flagscale.train.megatron.bagel_energon.data_utils import pil_img2rgb, get_flattened_position_ids_extrapolate, get_flattened_position_ids_interpolate
-from flagscale.train.megatron.bagel_energon.transforms import ImageTransform, AudioTransform
-from flagscale.train.megatron.bagel_energon.video_utils import FrameSampler
-
-from .packing import make_sequence_status, pack_sequence, to_tensor
-from .sample_types import BagelPackedBatch, BagelSample
-from .transforms import ImageTransform
-from .task_handlers import TASK_REGISTRY
-from .cooker import video_cooker, image_cooker
+from flagscale.train.datasets.energon.data_utils import pil_img2rgb, get_flattened_position_ids_extrapolate, get_flattened_position_ids_interpolate
+from flagscale.train.datasets.energon.transforms import ImageTransform, AudioTransform
+from flagscale.train.datasets.energon.video_utils import FrameSampler
+from flagscale.train.datasets.energon.packing import make_sequence_status, pack_sequence, to_tensor
+from flagscale.train.datasets.energon.sample_types import BagelPackedBatch, BagelSample
+from flagscale.train.datasets.energon.transforms import ImageTransform
+from flagscale.train.datasets.energon.task_handlers import TASK_REGISTRY
+from flagscale.train.datasets.energon.cooker import video_cooker, image_cooker
 
 
 class BagelDataConfig:
