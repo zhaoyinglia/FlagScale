@@ -1,0 +1,11 @@
+# Energon dataset.yaml template for Bagel T2I data
+# Place this file at: <wds_output_dir>/.energon/dataset.yaml
+# after running: energon prepare <wds_output_dir> --sample-type CrudeWebdataset
+
+__module__: flagscale.train.megatron.bagel_energon.webdataset_factory
+__class__: BagelT2IWebdataset
+
+field_map:
+  jpg: jpg
+  txt: txt
+  json: json

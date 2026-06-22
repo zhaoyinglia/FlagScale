@@ -1,0 +1,10 @@
+# Energon dataset.yaml template for Bagel VLM data
+# Place this file at: <wds_output_dir>/.energon/dataset.yaml
+# after running: energon prepare <wds_output_dir> --sample-type CrudeWebdataset
+
+__module__: flagscale.train.megatron.bagel_energon.webdataset_factory
+__class__: BagelVLMWebdataset
+
+field_map:
+  json: json
+  # Images are loaded by numbered keys (000.jpg, 001.jpg, ...) in load_sample()

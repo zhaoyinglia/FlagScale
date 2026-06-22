@@ -2856,7 +2856,8 @@ def _add_tokenizer_args(parser):
                                 'Llama3TokenizerFS',
                                 'QwenTokenizerFS',
                                 'Qwen2TokenizerFS',
-                                'Qwen2VLTokenizer'],
+                                'Qwen2VLTokenizer',
+                                'BagelTokenizerFS'],
                        help='What type of tokenizer to use.')
     group.add_argument('--tokenizer-model', type=str, default=None,
                        help='Sentencepiece tokenizer model.')
