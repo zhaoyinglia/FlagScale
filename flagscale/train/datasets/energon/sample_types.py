@@ -82,16 +82,3 @@ class BagelPackedBatch:
             data['ce_loss_indexes'] = self.ce_loss_indexes
             data['ce_loss_weights'] = self.ce_loss_weights
         return data
-
-
-@dataclass
-class T2ISample:
-    #: The input image tensor in the shape (C, H, W)
-    image: torch.Tensor
-    #: The captions of the image
-    captions: str
-
-
-class VLMSample:
-    #: The input image tensor in the shape (C, H, W)
-    image: torch.Tensor

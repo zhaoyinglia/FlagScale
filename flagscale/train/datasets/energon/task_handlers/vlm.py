@@ -1,11 +1,8 @@
-import os
 import json
-from PIL import Image
 from typing import Dict, List
 
 from flagscale.train.datasets.energon.data_utils import pil_img2rgb
 from flagscale.train.datasets.energon.sample_types import BagelSample
-
 from flagscale.train.datasets.energon.task_handlers.base import BaseTaskHandler
 
 
@@ -50,7 +47,7 @@ class VLMHandler(BaseTaskHandler):
         frame_sampler = kwargs.get("frame_sampler")
 
         print(f"{sample=}")
-        data_item = sample.get('data_item') or sample.get('json_data') or json.loads(sample.get('json_line', '{}'))
+        data_item = sample.get('json_data')
         images = sample.get('images', [])
         video_bytes = sample.get('video_bytes', None)
         conversations = data_item.get('conversations', [])
@@ -84,10 +81,10 @@ class VLMHandler(BaseTaskHandler):
                 height, width = image_tensor.shape[1:]
                 num_tokens += width * height // transform_stride ** 2
 
-        print(f"{len(image_tensor_list)=}")
+        # print(f"{len(image_tensor_list)=}")
         # Parse conversations into elements
         elements = self._parse_conversations(conversations, len(image_tensor_list))
-        print(f"{elements=}")
+        # print(f"{elements=}")
 
         # Build sequence_plan and text_ids_list
         for item in elements:

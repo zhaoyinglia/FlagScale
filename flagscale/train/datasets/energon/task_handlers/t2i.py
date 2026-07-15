@@ -1,42 +1,51 @@
 import io
+import json
+import random
 from PIL import Image
-from typing import Dict, Any
-
-from .base import BaseTaskHandler
 
 from flagscale.train.datasets.energon.data_utils import pil_img2rgb
+from flagscale.train.datasets.energon.sample_types import BagelSample
+from flagscale.train.datasets.energon.task_handlers.base import BaseTaskHandler
 
 
 class T2IHandler(BaseTaskHandler):
 
     def encode(self, sample, **kwargs):
         """Encode text-to-image sample: caption + VAE image."""
-        caption = sample.get('caption', '')
-        image_bytes = sample.get('image_bytes')
-
         transform = kwargs.get("transform")
-        transform_stride = self.transform.stride
+
+        data_item = sample.get('json_data')
+        images = sample.get('images', [])
+        caption_dict = data_item.get('caption_dict', '')
+        # print(f"{images=}, {caption_dict=}")
+
+        assert images is not None and len(images) == 1
 
         image_tensor_list = []
         text_ids_list = []
         sequence_plan = []
         num_tokens = 0
 
-        # Load and transform image for VAE
-        if image_bytes is not None:
-            img = pil_img2rgb(Image.open(io.BytesIO(image_bytes)))
-            image_tensor = transform(img)
-            image_tensor_list.append(image_tensor)
-            _, h, w = image_tensor.shape
-            latent_h = min(h // self.data_config.vae_image_downsample, self.data_config.max_latent_size)
-            latent_w = min(w // self.data_config.vae_image_downsample, self.data_config.max_latent_size)
-            num_tokens += latent_h * latent_w
+        # Load image
+        raw_image = pil_img2rgb(images[0])
+
+        # transform image for VAE
+        transform_stride = transform.stride
+        image_tensor = transform(raw_image)
+        image_tensor_list.append(image_tensor)
+        height, width = image_tensor.shape[1:]
+        num_tokens += width * height // transform_stride ** 2
 
         # Tokenize caption
-        text_ids = self.tokenizer.encode(caption)
-        if len(text_ids) > 0:
-            text_ids_list.append(text_ids)
-            num_tokens += len(text_ids)
+        caption_dict = json.loads(caption_dict)
+        caps_token = [self.tokenizer.encode(v) for _, v in caption_dict.items()]
+        assert len(caps_token) >= 1
+        caption_token = random.choice(caps_token)
+
+        # text_ids = self.tokenizer.encode(caption.get("caption"))
+        if len(caption_token) > 0:
+            text_ids_list.append(caption_token)
+            num_tokens += len(caption_token)
             sequence_plan.append({
                 'type': 'text',
                 'enable_cfg': 1,
@@ -55,11 +64,13 @@ class T2IHandler(BaseTaskHandler):
                 'special_token_label': None,
             })
 
-        return dict({
-            "image_tensor_list": image_tensor_list,
-            "text_ids_list": text_ids_list,
-            "sequence_plan": sequence_plan,
-            "num_tokens": num_tokens,
-            "is_mandatory": sample.get('__subflavors__', {}).get('is_mandatory', False),
-            "task": sample.get('__subflavors__', {}).get("task", "t2i"),
-        })
+        return BagelSample(
+            image_tensor_list=image_tensor_list,
+            text_ids_list=text_ids_list,
+            sequence_plan=sequence_plan,
+            num_tokens=num_tokens,
+            is_mandatory=sample.get('__subflavors__', {}).get('is_mandatory', False),
+            subflavor=sample.get('__subflavors__', {}).get("task", "vlm"),
+            __key__=sample.get('__key__', ''),
+            __restore_key__=sample.get('__restore_key__', ()),
+        )

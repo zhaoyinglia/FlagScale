@@ -50,9 +50,10 @@ class BagelDataConfig:
         max_latent_size=64,
         vit_patch_size=14,
         max_num_patch_per_side=70,
-        max_num_tokens=32768,
-        expected_num_tokens=31000,
+        max_num_tokens=36864,
+        expected_num_tokens=32768,
         max_num_tokens_per_sample=16384,
+        max_buffer_size=50,
     ):
         self.text_cond_dropout_prob = text_cond_dropout_prob
         self.vit_cond_dropout_prob = vit_cond_dropout_prob
@@ -64,6 +65,7 @@ class BagelDataConfig:
         self.max_num_tokens = max_num_tokens
         self.expected_num_tokens = expected_num_tokens
         self.max_num_tokens_per_sample = max_num_tokens_per_sample
+        self.max_buffer_size = max_buffer_size
 
 
 @lru_cache(maxsize=16)
@@ -123,14 +125,12 @@ class BagelTaskEncoder(
         self,
         data_config: BagelDataConfig,
         interpolate_pos: bool = False,
-        max_seq_length: Optional[int] = None,
     ):
         super().__init__()
         self.tokenizer = get_tokenizer()
         self.special_tokens = self.tokenizer.new_special_token_ids
         print(f"{self.special_tokens=}")
         self.data_config = data_config
-        self.group_size = max_seq_length if max_seq_length is not None else 4096
 
         self.handlers = {
             name: cls(self.tokenizer, self.special_tokens, self.data_config)
@@ -147,6 +147,11 @@ class BagelTaskEncoder(
         self._cp_size = getattr(_args, 'context_parallel_size', 1)
         self._tp_size = getattr(_args, 'tensor_model_parallel_size', 1)
         self._sequence_parallel = getattr(_args, 'sequence_parallel', False)
+
+        # Overflow buffer: samples that didn't fit in the previous pack are held
+        # here and prepended to the next select_samples_to_pack call so that no
+        # sample is wasted and every yielded pack meets expected_num_tokens.
+        self._overflow_buffer: List = []
 
     def _build_transforms(self, subflavors):
         transforms_item = {}
@@ -176,76 +181,133 @@ class BagelTaskEncoder(
 
         return transforms_item
 
-    def select_samples_to_pack(self, samples: List[BagelSample]) -> List[List[Dict[str, torch.Tensor]]]:
-        """Select samples from buffer to form packs.
+    def select_samples_to_pack(self, samples: List[BagelSample]) -> List[List[BagelSample]]:
+        """Select samples from buffer to form packs with overflow management.
 
-        Implements Bagel's packing strategy (mirrors dataset_base.py __iter__):
-        - Each pack starts by consuming all mandatory samples first
-        - Then greedily fills with non-mandatory samples
-        - Uses expected_num_tokens as the "pack is ready" threshold
-        - Uses max_num_tokens as the hard upper limit
+        Mirrors the original Bagel PackedDataset.__iter__ packing strategy:
+        - Prepend overflow samples from the previous call (like the original buffer)
+        - Uses expected_num_tokens as the soft threshold to yield a pack
+        - Uses max_num_tokens as the hard upper limit per pack
         - Samples exceeding max_num_tokens_per_sample are skipped
-        - Overflow samples go into a buffer for priority use in next pack
-
-        Selects which samples will be packed together.
-
-        This function receives a list of samples (size according to the selected packing_buffer_size), 
-        and partitions those samples into groups that shall be packed together.
+        - If the last pack doesn't reach expected_num_tokens, its samples are
+          held in the overflow buffer for the next call (no short batches)
 
         Args:
-            samples (List[Dict[str, torch.Tensor]]): List of samples from the buffer, each containing
-                tokenized data with keys like 'input_ids', 'labels', 'loss_mask', etc.
+            samples: List of samples from Energon's reading buffer.
 
         Returns:
-            List[List[Dict[str, torch.Tensor]]]: List of groups, where each group is a list of samples
-                that should be packed together. Each group's total length will not exceed group_size.
+            List of groups where each group is a list of samples to pack together.
+            Every returned pack is guaranteed to have >= expected_num_tokens
+            (except when the data source is exhausted).
 
         NOTE: Energon dataloader calls this method internally if packing is used.
         Please see https://nvidia.github.io/Megatron-Energon/advanced/packing.html
         """
+        # --- Step 1: Load packing configuration ---
+        # max_tokens: hard ceiling for a single pack (prevents OOM)
+        # max_per_sample: discard any sample longer than this
+        # expected: soft target — once a pack reaches this, emit it
+        # max_buffer_size: cap on how many "doesn't fit" samples we hold locally
         max_tokens = self.data_config.max_num_tokens
         max_per_sample = self.data_config.max_num_tokens_per_sample
         expected = self.data_config.expected_num_tokens
+        max_buffer_size = self.data_config.max_buffer_size
 
-        # Filter out oversized samples
-        valid_samples = [s for s in samples if s.num_tokens <= max_per_sample]
-        print(f"{len(valid_samples)=}, {valid_samples=}")
+        # --- Step 2: Merge overflow from previous call with new samples ---
+        # Overflow samples are placed first so they get priority (equivalent to
+        # the original code's "prefer_buffer_before" behavior where buffered
+        # samples are consumed before drawing new ones from the data stream).
+        all_samples = self._overflow_buffer + list(samples)
+        self._overflow_buffer = []
+
+        # --- Step 3: Filter out oversized samples ---
+        # Samples exceeding max_num_tokens_per_sample are permanently discarded,
+        # matching the original "skip a sample with length ..." behavior.
+        # Token count includes +2 per segment in sequence_plan (bos/eos overhead).
+        valid_samples = []
+        for s in all_samples:
+            token_count = s.num_tokens + 2 * len(s.sequence_plan)
+            if token_count <= max_per_sample:
+                valid_samples.append((s, token_count))
+
         if not valid_samples:
             return []
 
-        # # Separate mandatory and non-mandatory
-        # mandatory = [s for s in valid_samples if s.is_mandatory]
-        # non_mandatory = [s for s in valid_samples if not s.is_mandatory]
-
+        # --- Step 4: Greedy bin-packing with overflow buffer ---
+        # Walk through valid_samples one by one, trying to fit each into
+        # current_pack. Three outcomes per sample:
+        #   (a) Fits and pack not yet full → append to current_pack
+        #   (b) Fits and pack reaches expected → emit pack, start fresh
+        #   (c) Doesn't fit → stash in pending_candidates for later
         packs = []
         current_pack = []
         current_tokens = 0
+        pending_candidates = []
 
-        # # Start each pack with a mandatory sample if available
-        # if mandatory:
-        #     m_sample = mandatory.pop(0)
-        #     current_pack.append(m_sample)
-        #     current_tokens = m_sample.num_tokens + 2 * len(m_sample.sequence_plan)
-
-        # # Fill with remaining samples (sorted by size for better packing)
-        # remaining = mandatory + non_mandatory
-        # random.shuffle(remaining)
-
-        for sample in samples:
-            sample_tokens = sample.num_tokens + 2 * len(sample.sequence_plan)
-            if current_tokens + sample_tokens <= max_tokens:
+        for sample, token_count in valid_samples:
+            if current_tokens + token_count <= max_tokens:
+                # Case (a)/(b): sample fits within the hard limit
                 current_pack.append(sample)
-                current_tokens += sample_tokens
-            elif current_pack:
-                # Current pack is full, start a new one
-                packs.append(current_pack)
-                current_pack = [sample]
-                current_tokens = sample_tokens
+                current_tokens += token_count
 
-        if current_pack:
-            packs.append(current_pack)
+                if current_tokens >= expected:
+                    # Pack reached the soft target — emit it
+                    packs.append(current_pack)
+                    current_pack = []
+                    current_tokens = 0
 
-        print(f"{len(packs)=}, {packs=}")
+                    # Drain pending_candidates into the fresh pack immediately.
+                    # This gives previously-buffered (typically large) samples a
+                    # chance to be placed while the new pack is still empty.
+                    for pend_sample, pend_tokens in pending_candidates:
+                        if current_tokens + pend_tokens <= max_tokens:
+                            current_pack.append(pend_sample)
+                            current_tokens += pend_tokens
+                            if current_tokens >= expected:
+                                packs.append(current_pack)
+                                current_pack = []
+                                current_tokens = 0
+                        else:
+                            # Still doesn't fit — persist to cross-call overflow
+                            self._overflow_buffer.append(pend_sample)
+                    pending_candidates = []
+            else:
+                # Case (c): sample would exceed the hard limit for current pack
+                if len(pending_candidates) < max_buffer_size:
+                    # Stash it; we'll try again after the current pack is emitted
+                    pending_candidates.append((sample, token_count))
+                else:
+                    # Overflow buffer is full — force-emit the current pack even
+                    # though it may not have reached `expected`. This matches the
+                    # original behavior: "buffer full + can't fit → yield batch".
+                    if current_pack:
+                        packs.append(current_pack)
+                    # Start a new pack with the sample that triggered the flush
+                    current_pack = [sample]
+                    current_tokens = token_count
+                    # Try to fit pending_candidates into the new pack
+                    for pend_sample, pend_tokens in pending_candidates:
+                        if current_tokens + pend_tokens <= max_tokens:
+                            current_pack.append(pend_sample)
+                            current_tokens += pend_tokens
+                        else:
+                            self._overflow_buffer.append(pend_sample)
+                    pending_candidates = []
+
+        # --- Step 5: Handle leftover samples at the end of this call ---
+        # current_pack is within max_tokens, but pending_candidates may push
+        # the total over. Only emit if both conditions are met: total tokens
+        # >= expected AND <= max_tokens. Otherwise, hold everything for next call.
+        remaining = current_pack + [s for s, _ in pending_candidates]
+        if remaining:
+            remaining_tokens = sum(
+                s.num_tokens + 2 * len(s.sequence_plan) for s in remaining
+            )
+            if remaining_tokens >= expected and remaining_tokens <= max_tokens:
+                packs.append(remaining)
+            else:
+                self._overflow_buffer.extend(remaining)
+
         return packs
 
     @stateless
@@ -275,10 +337,10 @@ class BagelTaskEncoder(
           - 'vlm': VLM SFT data (jsonl conversations + images)
           - 't2i': Text-to-image data (parquet image + caption)
         """
-        print(f"{sample=}")
+        # print(f"{sample=}")
         subflavors = sample.get('__subflavors__', {})
         task = subflavors.get('task', None)
-        print(f"{subflavors=}")
+        # print(f"{subflavors=}")
 
         kwargs = self._build_transforms(subflavors)
         handler = self.handlers.get(task)
@@ -304,7 +366,7 @@ class BagelTaskEncoder(
         return batch
 
 
-def bagel_vlm_dataloader_provider(train_val_test_num_samples, max_seq_length: Optional[int] = None):
+def bagel_vlm_dataloader_provider(train_val_test_num_samples):
     args = get_args()
 
     bagel_config = BagelDataConfig(
@@ -315,9 +377,10 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples, max_seq_length: Op
         vit_patch_size=getattr(args, 'vit_patch_size', 14),
         max_latent_size=getattr(args, 'max_latent_size', 64),
         max_num_patch_per_side=getattr(args, 'max_num_patch_per_side', 70),
-        max_num_tokens=getattr(args, 'max_num_tokens', 16384), # 36864
-        expected_num_tokens=getattr(args, 'expected_num_tokens', 16384), # 32768
+        max_num_tokens=getattr(args, 'max_num_tokens', 36864),
+        expected_num_tokens=getattr(args, 'expected_num_tokens', 32768),
         max_num_tokens_per_sample=getattr(args, 'max_num_tokens_per_sample', 16384),
+        max_buffer_size=getattr(args, 'max_buffer_size', 50),
     )
 
     return train_valid_test_dataloaders_provider(
@@ -325,7 +388,6 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples, max_seq_length: Op
         task_encoder=BagelTaskEncoder(
             data_config=bagel_config,
             interpolate_pos=args.interpolate_pos,
-            max_seq_length=max_seq_length,
         )
     )
 
@@ -384,7 +446,7 @@ class EnergonDataloader:
         return self._dataloader.save_state_rank()
 
 
-def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encoder=None):
+def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encoder):
 
     args = get_args()
 
@@ -392,7 +454,6 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encod
     if not is_dataloader_rank():
         return None, None, None
 
-    tokenizer = get_tokenizer()
     worker_debug_path = None
     worker_log_level = 0
 
@@ -409,25 +470,12 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encod
         worker_log_level=worker_log_level,
     )
 
-    # task_encoder = BagelTaskEncoder(
-    #     tokenizer=tokenizer,
-    #     special_tokens=tokenizer.new_special_token_ids,
-    #     data_config=bagel_config,
-    # )
-    # task_encoder=BagelTaskEncoder(
-    #     data_config=bagel_config,
-    #     interpolate_pos=args.interpolate_pos,
-    #     max_seq_length=max_seq_length,
-    # )
-
-    # # Build dataset paths with weights
-    # dataset_configs = getattr(args, 'datasets', [])
-    # if not dataset_configs:
-    #     raise ValueError("data_config must contain 'datasets' list")
-    dname = args.data_path[0] if type(args.data_path) is list else args.data_path
+    # Build dataset paths with weights
+    assert (isinstance(args.data_path, list) and len(args.data_path) == 1) or \
+        isinstance(args.data_path, str)
+    dname = args.data_path[0] if isinstance(args.data_path, list) else args.data_path
 
     # For single dataset
-    # if len(dataset_configs) == 1:
     dataset = get_train_dataset(
         dname,
         batch_size=args.micro_batch_size,
@@ -440,23 +488,6 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encod
         handler=print_error_handler,
         image_decode="pil",
     )
-    # else:
-    #     # For blended datasets
-    #     blend_config = []
-    #     for ds_cfg in dataset_configs:
-    #         blend_config.append({
-    #             'path': ds_cfg['path'],
-    #             'weight': ds_cfg.get('weight', 1.0),
-    #             'subflavors': ds_cfg.get('subflavors', {}),
-    #         })
-    #     dataset = get_train_dataset(
-    #         blend_config,
-    #         worker_config=worker_config,
-    #         batch_size=args.micro_batch_size,
-    #         task_encoder=task_encoder,
-    #         max_samples_per_sequence=getattr(args, 'max_samples_per_sequence', None),
-    #         shuffle_buffer_size=getattr(args, 'shuffle_buffer_size', 1000),
-    #     )
 
     # Build savable dataloader
     dataloader = get_savable_loader(
