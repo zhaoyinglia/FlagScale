@@ -1,12 +1,10 @@
-
 import json
 
 from megatron.energon import stateless
 from megatron.energon.task_encoder.cooking import Cooker
 
-
-IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.webp')
-VIDEO_EXTENSIONS = ('.mp4', '.avi', '.mov', '.webm', '.mkv', '.flv')
+IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+VIDEO_EXTENSIONS = (".mp4", ".avi", ".mov", ".webm", ".mkv", ".flv")
 
 
 @stateless
@@ -17,22 +15,22 @@ def cook_bagel_images_sample(sample: dict) -> dict:
       000000000.000.jpg  -> sample['000.jpg'] (PIL Image or bytes)
       000000000.json     -> sample['json'] (decoded dict)
     """
-    json_data = sample.get('json', {})
+    json_data = sample.get("json", {})
     if isinstance(json_data, (bytes, str)):
         json_data = json.loads(json_data)
 
     # Collect all image keys (e.g., '000.jpg', '000.png', etc.)
     images = []
     for key, value in sample.items():
-        if key.startswith('__'):
+        if key.startswith("__"):
             continue
         if any(key.endswith(ext) for ext in IMAGE_EXTENSIONS):
             images.append(value)
 
     result = {
-        **{k: v for k, v in sample.items() if k.startswith('__')},  # preserve meta keys
-        'json_data': json_data,
-        'images': images,
+        **{k: v for k, v in sample.items() if k.startswith("__")},  # preserve meta keys
+        "json_data": json_data,
+        "images": images,
     }
     return result
 
@@ -54,7 +52,7 @@ def cook_bagel_video_sample(sample: dict) -> dict:
         'video_bytes': bytes,   # raw video bytes for FrameSampler
       }
     """
-    json_data = sample.get('json', {})
+    json_data = sample.get("json", {})
     if isinstance(json_data, (bytes, str)):
         json_data = json.loads(json_data)
 
@@ -63,11 +61,11 @@ def cook_bagel_video_sample(sample: dict) -> dict:
     video_bytes = None
     images = []
     for key, value in sample.items():
-        if key.startswith('__'):
+        if key.startswith("__"):
             continue
         if any(key.endswith(ext) for ext in VIDEO_EXTENSIONS):
             # AVDecoder object → extract raw bytes for decord
-            if hasattr(value, 'stream'):
+            if hasattr(value, "stream"):
                 value.stream.seek(0)
                 video_bytes = value.stream.read()
                 value.stream.seek(0)
@@ -80,10 +78,10 @@ def cook_bagel_video_sample(sample: dict) -> dict:
             images.append(value)
 
     result = {
-        **{k: v for k, v in sample.items() if k.startswith('__')},  # preserve meta keys
-        'json_data': json_data,
-        'images': images,
-        'video_bytes': video_bytes,
+        **{k: v for k, v in sample.items() if k.startswith("__")},  # preserve meta keys
+        "json_data": json_data,
+        "images": images,
+        "video_bytes": video_bytes,
     }
     return result
 

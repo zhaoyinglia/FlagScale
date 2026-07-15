@@ -1,7 +1,4 @@
-
-
 class BaseTaskHandler:
-
     def __init__(self, tokenizer, special_tokens, data_config):
         self.tokenizer = tokenizer
         self.special_tokens = special_tokens

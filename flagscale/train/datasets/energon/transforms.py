@@ -1,21 +1,25 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 # Image transforms for Bagel data pipeline, ported from Bagel's transforms.py.
 
-import torch
 import numpy as np
-
+import torch
 from torchvision import transforms
-from torchvision.transforms import functional as F
-from torchvision.transforms import InterpolationMode
-
+from torchvision.transforms import InterpolationMode, functional as F
 from transformers.audio_utils import mel_filter_bank, spectrogram, window_function
 
 
 class MaxLongEdgeMinShortEdgeResize(torch.nn.Module):
     """Resize image so longest/shortest sides are within range, divisible by stride."""
 
-    def __init__(self, max_size, min_size, stride, max_pixels,
-                 interpolation=InterpolationMode.BICUBIC, antialias=True):
+    def __init__(
+        self,
+        max_size,
+        min_size,
+        stride,
+        max_pixels,
+        interpolation=InterpolationMode.BICUBIC,
+        antialias=True,
+    ):
         super().__init__()
         self.max_size = max_size
         self.min_size = min_size
@@ -58,9 +62,15 @@ class MaxLongEdgeMinShortEdgeResize(torch.nn.Module):
 class ImageTransform:
     """Standard image transform for Bagel: resize + to_tensor + normalize."""
 
-    def __init__(self, max_image_size, min_image_size, image_stride,
-                 max_pixels=14*14*9*1024,
-                 image_mean=(0.5, 0.5, 0.5), image_std=(0.5, 0.5, 0.5)):
+    def __init__(
+        self,
+        max_image_size,
+        min_image_size,
+        image_stride,
+        max_pixels=14 * 14 * 9 * 1024,
+        image_mean=(0.5, 0.5, 0.5),
+        image_std=(0.5, 0.5, 0.5),
+    ):
         self.stride = image_stride
         self.resize_transform = MaxLongEdgeMinShortEdgeResize(
             max_size=max_image_size,
@@ -78,7 +88,6 @@ class ImageTransform:
         img = self.to_tensor_transform(img)
         img = self.normalize_transform(img)
         return img
-
 
 
 class AudioTransform:
@@ -139,7 +148,7 @@ class AudioTransform:
 
         # Truncate if longer than chunk_length
         if len(waveform) > self.n_samples:
-            waveform = waveform[:self.n_samples]
+            waveform = waveform[: self.n_samples]
 
         # # Pad with zeros if shorter than chunk_length
         # if len(waveform) < self.n_samples:

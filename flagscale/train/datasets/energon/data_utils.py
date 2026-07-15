@@ -1,17 +1,13 @@
 # Copyright (c) 2025, BAAI. All rights reserved.
 # Utility functions for Bagel data processing, ported from Bagel's data_utils.py.
 
-import math
-import random
-from PIL import Image, ImageFile, PngImagePlugin
-
 import torch
-
+from PIL import Image, ImageFile, PngImagePlugin
 
 Image.MAX_IMAGE_PIXELS = 200000000
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 MaximumDecompressedSize = 1024
-MegaByte = 2 ** 20
+MegaByte = 2**20
 PngImagePlugin.MAX_TEXT_CHUNK = MaximumDecompressedSize * MegaByte
 
 
@@ -52,20 +48,22 @@ def prepare_attention_mask_per_sample(split_lens, attn_modes, device="cpu"):
 
     csum = 0
     for s, attn_mode in zip(split_lens, attn_modes):
-        assert attn_mode in ['causal', 'full', 'noise']
+        assert attn_mode in ["causal", "full", "noise"]
         if attn_mode == "causal":
-            attention_mask[csum:csum + s, csum:csum + s] = torch.ones((s, s), device=device).tril()
-            attention_mask[csum:csum + s, :csum] = 1
+            attention_mask[csum : csum + s, csum : csum + s] = torch.ones(
+                (s, s), device=device
+            ).tril()
+            attention_mask[csum : csum + s, :csum] = 1
         else:
-            attention_mask[csum:csum + s, csum:csum + s] = torch.ones((s, s))
-            attention_mask[csum:csum + s, :csum] = 1
+            attention_mask[csum : csum + s, csum : csum + s] = torch.ones((s, s))
+            attention_mask[csum : csum + s, :csum] = 1
         csum += s
 
     csum = 0
     for s, attn_mode in zip(split_lens, attn_modes):
         if attn_mode == "noise":
-            attention_mask[:, csum:csum + s] = torch.zeros((sample_len, s))
-            attention_mask[csum:csum + s, csum:csum + s] = torch.ones((s, s))
+            attention_mask[:, csum : csum + s] = torch.zeros((sample_len, s))
+            attention_mask[csum : csum + s, csum : csum + s] = torch.ones((s, s))
         csum += s
 
     attention_mask = torch.zeros_like(attention_mask, dtype=torch.float).masked_fill_(
@@ -74,15 +72,15 @@ def prepare_attention_mask_per_sample(split_lens, attn_modes, device="cpu"):
     return attention_mask
 
 
-def len2weight(x, loss_reduction='square'):
+def len2weight(x, loss_reduction="square"):
     if x == 0:
         return x
-    if loss_reduction == 'token':
+    if loss_reduction == "token":
         return 1
-    if loss_reduction == 'sample':
+    if loss_reduction == "sample":
         return 1 / x
-    if loss_reduction == 'square':
-        return 1 / (x ** 0.5)
+    if loss_reduction == "square":
+        return 1 / (x**0.5)
     raise NotImplementedError(loss_reduction)
 
 
@@ -107,15 +105,15 @@ def add_special_tokens(tokenizer):
             all_special_tokens += v
 
     new_tokens = []
-    for token in ['<|im_start|>', '<|im_end|>', '<|vision_start|>', '<|vision_end|>']:
+    for token in ["<|im_start|>", "<|im_end|>", "<|vision_start|>", "<|vision_end|>"]:
         if token not in all_special_tokens:
             new_tokens.append(token)
 
     num_new_tokens = tokenizer.add_tokens(new_tokens)
-    bos_token_id = tokenizer.convert_tokens_to_ids('<|im_start|>')
-    eos_token_id = tokenizer.convert_tokens_to_ids('<|im_end|>')
-    start_of_image = tokenizer.convert_tokens_to_ids('<|vision_start|>')
-    end_of_image = tokenizer.convert_tokens_to_ids('<|vision_end|>')
+    bos_token_id = tokenizer.convert_tokens_to_ids("<|im_start|>")
+    eos_token_id = tokenizer.convert_tokens_to_ids("<|im_end|>")
+    start_of_image = tokenizer.convert_tokens_to_ids("<|vision_start|>")
+    end_of_image = tokenizer.convert_tokens_to_ids("<|vision_end|>")
 
     new_token_ids = dict(
         bos_token_id=bos_token_id,

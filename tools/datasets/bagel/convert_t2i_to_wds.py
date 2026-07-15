@@ -21,12 +21,12 @@ import argparse
 import json
 import os
 import sys
-import yaml
 
 import pyarrow.parquet as pq
 import webdataset as wds
-
+import yaml
 from tqdm import tqdm
+
 from megatron.energon.epathlib import EPath
 from megatron.energon.flavors import BaseWebdatasetFactory
 
@@ -81,9 +81,9 @@ def convert_t2i_to_wds(
     for data_dir in data_dirs:
         if os.path.isdir(data_dir):
             for f in sorted(os.listdir(data_dir)):
-                if f.endswith('.parquet'):
+                if f.endswith(".parquet"):
                     parquet_files.append(os.path.join(data_dir, f))
-        elif os.path.isfile(data_dir) and data_dir.endswith('.parquet'):
+        elif os.path.isfile(data_dir) and data_dir.endswith(".parquet"):
             parquet_files.append(data_dir)
 
     if not parquet_files:
@@ -114,7 +114,7 @@ def convert_t2i_to_wds(
                 # Handle different image storage formats
                 if isinstance(image_data, dict):
                     # Some parquet formats store as {"bytes": ..., "path": ...}
-                    image_bytes = image_data.get('bytes', None)
+                    image_bytes = image_data.get("bytes", None)
                 elif isinstance(image_data, bytes):
                     image_bytes = image_data
                 else:
@@ -136,14 +136,16 @@ def convert_t2i_to_wds(
                             metadata[col_name] = val
 
                 img_idx = 0
-                ext = 'jpg'
+                ext = "jpg"
                 sample = {
                     "__key__": f"{global_idx:09d}",
-                    "json": json.dumps({
-                        "caption_dict": caption_dict,
-                        "metadata": metadata,
-                    }).encode("utf-8"),
-                    f"{img_idx:03d}.{ext}": image_bytes
+                    "json": json.dumps(
+                        {
+                            "caption_dict": caption_dict,
+                            "metadata": metadata,
+                        }
+                    ).encode("utf-8"),
+                    f"{img_idx:03d}.{ext}": image_bytes,
                 }
 
                 sink.write(sample)
@@ -155,19 +157,19 @@ def convert_t2i_to_wds(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Convert Bagel T2I parquet data to WebDataset tar format")
-    parser.add_argument("--data_dirs", nargs="+", required=True,
-                        help="Directories containing parquet files")
-    parser.add_argument("--output_dir", required=True,
-                        help="Output directory for tar shards")
-    parser.add_argument("--max_count", type=int, default=10000,
-                        help="Max samples per shard")
-    parser.add_argument("--image_column", default="image",
-                        help="Column name for image data")
-    parser.add_argument("--caption_column", default="captions",
-                        help="Column name for caption text")
-    parser.add_argument("--max_size", type=float, default=3e9,
-                        help="Max shard size in bytes (default 3GB)")
+    parser = argparse.ArgumentParser(
+        description="Convert Bagel T2I parquet data to WebDataset tar format"
+    )
+    parser.add_argument(
+        "--data_dirs", nargs="+", required=True, help="Directories containing parquet files"
+    )
+    parser.add_argument("--output_dir", required=True, help="Output directory for tar shards")
+    parser.add_argument("--max_count", type=int, default=10000, help="Max samples per shard")
+    parser.add_argument("--image_column", default="image", help="Column name for image data")
+    parser.add_argument("--caption_column", default="captions", help="Column name for caption text")
+    parser.add_argument(
+        "--max_size", type=float, default=3e9, help="Max shard size in bytes (default 3GB)"
+    )
     parser.add_argument("--train-split", default=1, type=float)
     parser.add_argument("--val-split", default=0, type=float)
     parser.add_argument("--test-split", default=0, type=float)
@@ -184,9 +186,7 @@ def main():
     )
     print("Generating Configurations")
     split = [args.train_split, args.val_split, args.test_split]
-    generate_configs(
-        EPath(output_dir), split, num_workers=args.num_workers
-    )
+    generate_configs(EPath(output_dir), split, num_workers=args.num_workers)
     print("Configurations Generated")
 
 
