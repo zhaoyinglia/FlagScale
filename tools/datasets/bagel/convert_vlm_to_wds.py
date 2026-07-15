@@ -20,27 +20,24 @@ Usage:
     --max_count 5000
 """
 
-
 import argparse
-import io
 import json
 import os
-import sys
-import yaml
 from pathlib import Path
-import webdataset as wds
 
+import webdataset as wds
+import yaml
 from tqdm import tqdm
+
 from megatron.energon.epathlib import EPath
 from megatron.energon.flavors import BaseWebdatasetFactory
 
 
 def parse_image_paths_from_conversations(conversations, image_dir):
     """Extract image file paths from conversation data."""
-    image_paths = []
     for conv in conversations:
-        value = conv.get('value', '')
-        count = value.count('<image>')
+        value = conv.get("value", "")
+        count = value.count("<image>")
         image_paths_needed = count
     # Images are typically listed in a separate field or inferred from conversation
     return image_paths_needed
@@ -99,8 +96,10 @@ def convert_vlm_to_wds(
                 continue
 
             print(f"Processing {jsonl_path} with image_dir={image_dir}")
-            with open(jsonl_path, 'r') as f:
-                for line_idx, line in enumerate(tqdm(f, desc=f"Converting {Path(jsonl_path).name}")):
+            with open(jsonl_path, "r") as f:
+                for line_idx, line in enumerate(
+                    tqdm(f, desc=f"Converting {Path(jsonl_path).name}")
+                ):
                     line = line.strip()
                     if not line:
                         continue
@@ -111,28 +110,33 @@ def convert_vlm_to_wds(
                         print(f"Warning: invalid JSON at line {line_idx}, skipping")
                         continue
 
-                    conversations = data.get('conversations', [])
-                    image_files = data.get('image', data.get('images', []))
+                    conversations = data.get("conversations", [])
+                    image_files = data.get("image", data.get("images", []))
                     if isinstance(image_files, str):
                         image_files = [image_files]
 
                     sample = {
                         "__key__": f"{global_idx:09d}",
-                        "json": json.dumps({
-                            "conversations": conversations,
-                            "metadata": {k: v for k, v in data.items()
-                                         if k not in ('conversations', 'image', 'images')},
-                        }).encode("utf-8"),
+                        "json": json.dumps(
+                            {
+                                "conversations": conversations,
+                                "metadata": {
+                                    k: v
+                                    for k, v in data.items()
+                                    if k not in ("conversations", "image", "images")
+                                },
+                            }
+                        ).encode("utf-8"),
                     }
 
                     # Add images as numbered files
                     for img_idx, img_file in enumerate(image_files):
                         img_path = os.path.join(image_dir, img_file)
                         if os.path.exists(img_path):
-                            with open(img_path, 'rb') as img_f:
-                                ext = Path(img_path).suffix.lstrip('.')
-                                if ext not in ('jpg', 'jpeg', 'png', 'webp'):
-                                    ext = 'jpg'
+                            with open(img_path, "rb") as img_f:
+                                ext = Path(img_path).suffix.lstrip(".")
+                                if ext not in ("jpg", "jpeg", "png", "webp"):
+                                    ext = "jpg"
                                 sample[f"{img_idx:03d}.{ext}"] = img_f.read()
                         else:
                             print(f"Warning: image not found: {img_path}")
@@ -147,24 +151,22 @@ def convert_vlm_to_wds(
 
 def main():
     parser = argparse.ArgumentParser(description="Convert Bagel VLM data to WebDataset tar format")
-    parser.add_argument("--jsonl_paths", nargs="+", required=True,
-                        help="Paths to jsonl files")
-    parser.add_argument("--image_dirs", nargs="+", required=True,
-                        help="Image directories (one per jsonl)")
-    parser.add_argument("--output_dir", required=True,
-                        help="Output directory for tar shards")
-    parser.add_argument("--max_count", type=int, default=5000,
-                        help="Max samples per shard")
-    parser.add_argument("--max_size", type=float, default=9e12,
-                        help="Max shard size in bytes")
+    parser.add_argument("--jsonl_paths", nargs="+", required=True, help="Paths to jsonl files")
+    parser.add_argument(
+        "--image_dirs", nargs="+", required=True, help="Image directories (one per jsonl)"
+    )
+    parser.add_argument("--output_dir", required=True, help="Output directory for tar shards")
+    parser.add_argument("--max_count", type=int, default=5000, help="Max samples per shard")
+    parser.add_argument("--max_size", type=float, default=9e12, help="Max shard size in bytes")
     parser.add_argument("--train-split", default=1, type=float)
     parser.add_argument("--val-split", default=0, type=float)
     parser.add_argument("--test-split", default=0, type=float)
     parser.add_argument("--num-workers", default=1, type=int)
     args = parser.parse_args()
 
-    assert len(args.jsonl_paths) == len(args.image_dirs), \
+    assert len(args.jsonl_paths) == len(args.image_dirs), (
         "Must provide same number of jsonl_paths and image_dirs"
+    )
 
     output_dir = convert_vlm_to_wds(
         jsonl_paths=args.jsonl_paths,
@@ -175,9 +177,7 @@ def main():
     )
     print("Generating Configurations")
     split = [args.train_split, args.val_split, args.test_split]
-    generate_configs(
-        EPath(output_dir), split, num_workers=args.num_workers
-    )
+    generate_configs(EPath(output_dir), split, num_workers=args.num_workers)
     print("Configurations Generated")
 
 

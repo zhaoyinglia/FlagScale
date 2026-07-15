@@ -1,12 +1,11 @@
+from typing import TYPE_CHECKING
 
-from typing import Dict
-
-from .base import BaseTaskHandler
-from .vlm import VLMHandler
+if TYPE_CHECKING:
+    from .base import BaseTaskHandler
 from .t2i import T2IHandler
+from .vlm import VLMHandler
 
-
-TASK_REGISTRY: Dict[str, "BaseTaskHandler"] = {}
+TASK_REGISTRY: dict[str, "BaseTaskHandler"] = {}
 
 
 def register_task(name, cls):

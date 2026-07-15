@@ -1,41 +1,33 @@
-import os
 import sys
 import traceback
-import random
-from PIL import Image
-from typing import Dict, List, Union, Iterable, Tuple, Optional, Protocol, Any
 from functools import lru_cache
+from typing import Any
 
-import torch
-
-from megatron.training import get_args, get_tokenizer
-from megatron.core import parallel_state, tensor_parallel
+from megatron.core import parallel_state
 from megatron.core.parallel_state import (
     get_pipeline_model_parallel_rank,
     get_pipeline_model_parallel_world_size,
     get_tensor_model_parallel_rank,
 )
-
-from megatron.energon import TaskEncoder, stateless
-from megatron.energon.task_encoder.cooking import Cooker
 from megatron.energon import (
-    LimitDataset,
-    RepeatDataset,
+    TaskEncoder,
     WorkerConfig,
-    get_loader,
     get_savable_loader,
     get_train_dataset,
-    get_val_datasets,
+    stateless,
 )
+from megatron.training import get_args, get_tokenizer
 
-from flagscale.train.datasets.energon.data_utils import pil_img2rgb, get_flattened_position_ids_extrapolate, get_flattened_position_ids_interpolate
-from flagscale.train.datasets.energon.transforms import ImageTransform, AudioTransform
-from flagscale.train.datasets.energon.video_utils import FrameSampler
+from flagscale.train.datasets.energon.cooker import image_cooker, video_cooker
+from flagscale.train.datasets.energon.data_utils import (
+    get_flattened_position_ids_extrapolate,
+    get_flattened_position_ids_interpolate,
+)
 from flagscale.train.datasets.energon.packing import make_sequence_status, pack_sequence, to_tensor
 from flagscale.train.datasets.energon.sample_types import BagelPackedBatch, BagelSample
-from flagscale.train.datasets.energon.transforms import ImageTransform
 from flagscale.train.datasets.energon.task_handlers import TASK_REGISTRY
-from flagscale.train.datasets.energon.cooker import video_cooker, image_cooker
+from flagscale.train.datasets.energon.transforms import ImageTransform
+from flagscale.train.datasets.energon.video_utils import FrameSampler
 
 
 class BagelDataConfig:
@@ -73,7 +65,7 @@ def _get_image_transform(
     max_image_size,
     min_image_size,
     image_stride,
-    max_pixels=14*14*9*1024,
+    max_pixels=14 * 14 * 9 * 1024,
     image_mean=[0.5, 0.5, 0.5],
     image_std=[0.5, 0.5, 0.5],
 ):
@@ -91,7 +83,7 @@ def _get_image_transform(
 def _get_frame_sampler(
     max_num_frames=-1,
     min_num_frames=8,
-    sample='rand',
+    sample="rand",
 ):
     return FrameSampler(
         max_num_frames=max_num_frames,
@@ -100,14 +92,7 @@ def _get_frame_sampler(
     )
 
 
-class BagelTaskEncoder(
-    TaskEncoder[
-        Dict[str, Any],
-        dict,
-        dict,
-        dict
-    ]
-):
+class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
     """Energon TaskEncoder for Bagel multimodal model.
 
     Pipeline:
@@ -144,44 +129,44 @@ class BagelTaskEncoder(
 
         # Read parallelism settings directly from training args (these live in TransformerConfig).
         _args = get_args()
-        self._cp_size = getattr(_args, 'context_parallel_size', 1)
-        self._tp_size = getattr(_args, 'tensor_model_parallel_size', 1)
-        self._sequence_parallel = getattr(_args, 'sequence_parallel', False)
+        self._cp_size = getattr(_args, "context_parallel_size", 1)
+        self._tp_size = getattr(_args, "tensor_model_parallel_size", 1)
+        self._sequence_parallel = getattr(_args, "sequence_parallel", False)
 
         # Overflow buffer: samples that didn't fit in the previous pack are held
         # here and prepended to the next select_samples_to_pack call so that no
         # sample is wasted and every yielded pack meets expected_num_tokens.
-        self._overflow_buffer: List = []
+        self._overflow_buffer: list = []
 
     def _build_transforms(self, subflavors):
         transforms_item = {}
-        image_args = subflavors.get('image_transform_args')
+        image_args = subflavors.get("image_transform_args")
         if image_args:
             transforms_item["transform"] = _get_image_transform(
-                max_image_size=image_args['max_image_size'],
-                min_image_size=image_args['min_image_size'],
-                image_stride=image_args['image_stride'],
-                max_pixels=image_args.get('max_pixels', 14*14*9*1024),
+                max_image_size=image_args["max_image_size"],
+                min_image_size=image_args["min_image_size"],
+                image_stride=image_args["image_stride"],
+                max_pixels=image_args.get("max_pixels", 14 * 14 * 9 * 1024),
             )
-        vit_args = subflavors.get('vit_image_transform_args')
+        vit_args = subflavors.get("vit_image_transform_args")
         if vit_args:
             transforms_item["vit_transform"] = _get_image_transform(
-                max_image_size=vit_args['max_image_size'],
-                min_image_size=vit_args['min_image_size'],
-                image_stride=vit_args['image_stride'],
-                max_pixels=vit_args.get('max_pixels', 14*14*9*1024),
+                max_image_size=vit_args["max_image_size"],
+                min_image_size=vit_args["min_image_size"],
+                image_stride=vit_args["image_stride"],
+                max_pixels=vit_args.get("max_pixels", 14 * 14 * 9 * 1024),
             )
-        frame_args = subflavors.get('frame_sampler_args')
+        frame_args = subflavors.get("frame_sampler_args")
         if frame_args:
             transforms_item["frame_sampler"] = _get_frame_sampler(
-                max_num_frames=frame_args.get('max_num_frames', -1),
-                min_num_frames=frame_args.get('min_num_frames', 8),
-                sample=frame_args.get('sample', 'rand'),
+                max_num_frames=frame_args.get("max_num_frames", -1),
+                min_num_frames=frame_args.get("min_num_frames", 8),
+                sample=frame_args.get("sample", "rand"),
             )
 
         return transforms_item
 
-    def select_samples_to_pack(self, samples: List[BagelSample]) -> List[List[BagelSample]]:
+    def select_samples_to_pack(self, samples: list[BagelSample]) -> list[list[BagelSample]]:
         """Select samples from buffer to form packs with overflow management.
 
         Mirrors the original Bagel PackedDataset.__iter__ packing strategy:
@@ -300,9 +285,7 @@ class BagelTaskEncoder(
         # >= expected AND <= max_tokens. Otherwise, hold everything for next call.
         remaining = current_pack + [s for s, _ in pending_candidates]
         if remaining:
-            remaining_tokens = sum(
-                s.num_tokens + 2 * len(s.sequence_plan) for s in remaining
-            )
+            remaining_tokens = sum(s.num_tokens + 2 * len(s.sequence_plan) for s in remaining)
             if remaining_tokens >= expected and remaining_tokens <= max_tokens:
                 packs.append(remaining)
             else:
@@ -311,7 +294,7 @@ class BagelTaskEncoder(
         return packs
 
     @stateless
-    def pack_selected_samples(self, samples: List[BagelSample]) -> BagelPackedBatch:
+    def pack_selected_samples(self, samples: list[BagelSample]) -> BagelPackedBatch:
         """Pack a group of BagelSamples into a single BagelPackedBatch.
 
         This is the core packing logic from Bagel's PackedDataset.
@@ -330,7 +313,7 @@ class BagelTaskEncoder(
         return to_tensor(sequence_status, self.data_config.max_num_tokens)
 
     @stateless
-    def encode_sample(self, sample: Dict[str, Any]):
+    def encode_sample(self, sample: dict[str, Any]):
         """encode raw dict sample.
 
         Dispatches based on subflavors['task']:
@@ -338,8 +321,8 @@ class BagelTaskEncoder(
           - 't2i': Text-to-image data (parquet image + caption)
         """
         # print(f"{sample=}")
-        subflavors = sample.get('__subflavors__', {})
-        task = subflavors.get('task', None)
+        subflavors = sample.get("__subflavors__", {})
+        task = subflavors.get("task", None)
         # print(f"{subflavors=}")
 
         kwargs = self._build_transforms(subflavors)
@@ -349,7 +332,7 @@ class BagelTaskEncoder(
             raise ValueError(f"Unknown task: {task}. Available: {list(self.handlers.keys())}")
         return handler.encode(sample, **kwargs)
 
-    def batch(self, samples: List[BagelPackedBatch]):
+    def batch(self, samples: list[BagelPackedBatch]):
         """batch_size=1 for Bagel, so just return the single packed batch."""
         if not samples:
             return {}
@@ -370,17 +353,17 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples):
     args = get_args()
 
     bagel_config = BagelDataConfig(
-        text_cond_dropout_prob=getattr(args, 'text_cond_dropout_prob', 0.1),
-        vit_cond_dropout_prob=getattr(args, 'vit_cond_dropout_prob', 0.4),
-        vae_cond_dropout_prob=getattr(args, 'vae_cond_dropout_prob', 0.1),
-        vae_image_downsample=getattr(args, 'vae_image_downsample', 16),
-        vit_patch_size=getattr(args, 'vit_patch_size', 14),
-        max_latent_size=getattr(args, 'max_latent_size', 64),
-        max_num_patch_per_side=getattr(args, 'max_num_patch_per_side', 70),
-        max_num_tokens=getattr(args, 'max_num_tokens', 36864),
-        expected_num_tokens=getattr(args, 'expected_num_tokens', 32768),
-        max_num_tokens_per_sample=getattr(args, 'max_num_tokens_per_sample', 16384),
-        max_buffer_size=getattr(args, 'max_buffer_size', 50),
+        text_cond_dropout_prob=getattr(args, "text_cond_dropout_prob", 0.1),
+        vit_cond_dropout_prob=getattr(args, "vit_cond_dropout_prob", 0.4),
+        vae_cond_dropout_prob=getattr(args, "vae_cond_dropout_prob", 0.1),
+        vae_image_downsample=getattr(args, "vae_image_downsample", 16),
+        vit_patch_size=getattr(args, "vit_patch_size", 14),
+        max_latent_size=getattr(args, "max_latent_size", 64),
+        max_num_patch_per_side=getattr(args, "max_num_patch_per_side", 70),
+        max_num_tokens=getattr(args, "max_num_tokens", 36864),
+        expected_num_tokens=getattr(args, "expected_num_tokens", 32768),
+        max_num_tokens_per_sample=getattr(args, "max_num_tokens_per_sample", 16384),
+        max_buffer_size=getattr(args, "max_buffer_size", 50),
     )
 
     return train_valid_test_dataloaders_provider(
@@ -388,19 +371,19 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples):
         task_encoder=BagelTaskEncoder(
             data_config=bagel_config,
             interpolate_pos=args.interpolate_pos,
-        )
+        ),
     )
 
 
 def is_first_or_last_stage(pp_size):
     """Check if the current pipeline parallel stage is the first or last stage."""
-    if pp_size == 1:    # No pipeline parallelism.
+    if pp_size == 1:  # No pipeline parallelism.
         return True
 
-    # With no separate pipeline stage for the vision model (epp=0), 
+    # With no separate pipeline stage for the vision model (epp=0),
     # run the dataloader on the first and last pipeline stage.
     pp_rank = get_pipeline_model_parallel_rank()
-    is_valid_rank = pp_rank in (0, pp_size-1)
+    is_valid_rank = pp_rank in (0, pp_size - 1)
 
     return is_valid_rank
 
@@ -416,7 +399,7 @@ def is_dataloader_rank():
     return is_first_rank
 
 
-def print_error_handler(exc: Exception, key: Optional[str]):
+def print_error_handler(exc: Exception, key: str | None):
     print(
         f"The following exception occurred in the dataloader for sample {key} and is skipped",
         file=sys.stderr,
@@ -424,14 +407,15 @@ def print_error_handler(exc: Exception, key: Optional[str]):
     traceback.print_exc()
 
 
-def cyclic_iter(iter):
+def cyclic_iter(iterable):
     while True:
-        for x in iter:
-            yield x
+        for x in iterable:
+            yield from x
 
 
 class EnergonDataloader:
     """A wrapper to use Megatron Energon dataloader with the Megatron-LM training loop."""
+
     def __init__(self, dataloader):
         self._dataloader = dataloader
         self._iter = iter(cyclic_iter(dataloader))
@@ -447,7 +431,6 @@ class EnergonDataloader:
 
 
 def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encoder):
-
     args = get_args()
 
     # Dataloader is only on specific ranks.
@@ -471,8 +454,9 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encod
     )
 
     # Build dataset paths with weights
-    assert (isinstance(args.data_path, list) and len(args.data_path) == 1) or \
-        isinstance(args.data_path, str)
+    assert (isinstance(args.data_path, list) and len(args.data_path) == 1) or isinstance(
+        args.data_path, str
+    )
     dname = args.data_path[0] if isinstance(args.data_path, list) else args.data_path
 
     # For single dataset
@@ -481,10 +465,10 @@ def train_valid_test_dataloaders_provider(train_val_test_num_samples, task_encod
         batch_size=args.micro_batch_size,
         task_encoder=task_encoder,
         virtual_epoch_length=1000,
-        max_samples_per_sequence=getattr(args, 'max_samples_per_sequence', None),
-        shuffle_buffer_size=getattr(args, 'shuffle_buffer_size', 1000),
+        max_samples_per_sequence=getattr(args, "max_samples_per_sequence", None),
+        shuffle_buffer_size=getattr(args, "shuffle_buffer_size", 1000),
         worker_config=worker_config,
-        packing_buffer_size=getattr(args, 'packing_buffer_size', 12),
+        packing_buffer_size=getattr(args, "packing_buffer_size", 12),
         handler=print_error_handler,
         image_decode="pil",
     )
