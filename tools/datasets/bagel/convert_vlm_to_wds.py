@@ -183,3 +183,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+"""
+python tools/datasets/bagel/convert_vlm_to_wds.py \
+    --jsonl_paths /share/project/zhaoyingli/dataset/bagel_example/vlm/llava_ov_si.jsonl \
+    --image_dirs /share/project/zhaoyingli/dataset/bagel_example/vlm/images \
+    --output_dir /share/project/zhaoyingli/dataset/bagel_example/vlm/wds/ \
+    --max_count 5000
+"""

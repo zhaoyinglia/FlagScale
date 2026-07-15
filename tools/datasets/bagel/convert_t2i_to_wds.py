@@ -18,15 +18,44 @@
 #     --max_count 10000
 
 import argparse
-import io
 import json
 import os
 import sys
-from pathlib import Path
+import yaml
 
 import pyarrow.parquet as pq
 import webdataset as wds
+
 from tqdm import tqdm
+from megatron.energon.epathlib import EPath
+from megatron.energon.flavors import BaseWebdatasetFactory
+
+
+def generate_configs(path: EPath, split, num_workers=1):
+    all_tars = list(path.glob("**/*.tar")) + list(path.glob("**/*.tgz"))
+    all_tars = [str(p.relative_to(path)) for p in sorted(all_tars)]
+    split_parts_ratio = [("train", split[0]), ("val", split[1]), ("test", split[2])]
+    split_parts_patterns = None
+
+    BaseWebdatasetFactory.prepare_dataset(
+        path,
+        all_tars,
+        split_parts_ratio=split_parts_ratio,
+        split_parts_patterns=split_parts_patterns,
+        shuffle_seed=42,
+        workers=num_workers,
+    )
+
+    # Write dataset.yaml for CrudeWebdataset
+    metadata = {
+        "__class__": "CrudeWebdataset",
+        "__module__": "megatron.energon.flavors.crude",
+        "subflavors": {"task": "t2i"},
+    }
+    meta_dir = os.path.join(path.url, ".nv-meta")
+    os.makedirs(meta_dir, exist_ok=True)
+    with open(os.path.join(meta_dir, "dataset.yaml"), "w") as f:
+        yaml.safe_dump(metadata, f)
 
 
 def convert_t2i_to_wds(
@@ -35,14 +64,14 @@ def convert_t2i_to_wds(
     max_count: int = 10000,
     max_size: float = 3e9,
     image_column: str = "image",
-    caption_column: str = "caption",
+    caption_column: str = "captions",
 ):
     """Convert T2I parquet data to WebDataset tar format.
 
     Each sample in the tar contains:
       - __key__: "{global_idx:09d}"
-      - jpg: raw image bytes
-      - txt: caption string
+      - image: raw image bytes
+      - caption: caption string
       - json: any additional metadata columns
     """
     os.makedirs(output_dir, exist_ok=True)
@@ -74,10 +103,9 @@ def convert_t2i_to_wds(
                 print(f"Warning: failed to read {pq_path}: {e}")
                 continue
 
-            columns = table.column_names
-            num_rows = len(table)
+            columns_names = table.column_names
 
-            for row_idx in range(num_rows):
+            for row_idx in range(len(table)):
                 # Extract image bytes
                 image_data = table.column(image_column)[row_idx].as_py()
                 if image_data is None:
@@ -96,29 +124,34 @@ def convert_t2i_to_wds(
                     continue
 
                 # Extract caption
-                caption = table.column(caption_column)[row_idx].as_py() or ""
+                caption_dict = table.column(caption_column)[row_idx].as_py() or '{"caption": " "}'
+                # caption_dict = json.loads(caption_dict)
 
                 # Extract metadata (all other columns)
                 metadata = {}
-                for col in columns:
-                    if col not in (image_column, caption_column):
-                        val = table.column(col)[row_idx].as_py()
+                for col_name in columns_names:
+                    if col_name not in (image_column, caption_column):
+                        val = table.column(col_name)[row_idx].as_py()
                         if val is not None:
-                            metadata[col] = val
+                            metadata[col_name] = val
 
+                img_idx = 0
+                ext = 'jpg'
                 sample = {
                     "__key__": f"{global_idx:09d}",
-                    "jpg": image_bytes,
-                    "txt": caption.encode("utf-8") if isinstance(caption, str) else caption,
+                    "json": json.dumps({
+                        "caption_dict": caption_dict,
+                        "metadata": metadata,
+                    }).encode("utf-8"),
+                    f"{img_idx:03d}.{ext}": image_bytes
                 }
-                if metadata:
-                    sample["json"] = json.dumps(metadata).encode("utf-8")
 
                 sink.write(sample)
                 global_idx += 1
 
     print(f"Done. Wrote {global_idx} samples to {output_dir}")
-    print(f"Run 'energon prepare {output_dir} --sample-type CrudeWebdataset' to finalize.")
+    # print(f"Run 'energon prepare {output_dir} --sample-type CrudeWebdataset' to finalize.")
+    return output_dir
 
 
 def main():
@@ -129,15 +162,19 @@ def main():
                         help="Output directory for tar shards")
     parser.add_argument("--max_count", type=int, default=10000,
                         help="Max samples per shard")
-    parser.add_argument("--max_size", type=float, default=3e9,
-                        help="Max shard size in bytes (default 3GB)")
     parser.add_argument("--image_column", default="image",
                         help="Column name for image data")
-    parser.add_argument("--caption_column", default="caption",
+    parser.add_argument("--caption_column", default="captions",
                         help="Column name for caption text")
+    parser.add_argument("--max_size", type=float, default=3e9,
+                        help="Max shard size in bytes (default 3GB)")
+    parser.add_argument("--train-split", default=1, type=float)
+    parser.add_argument("--val-split", default=0, type=float)
+    parser.add_argument("--test-split", default=0, type=float)
+    parser.add_argument("--num-workers", default=1, type=int)
     args = parser.parse_args()
 
-    convert_t2i_to_wds(
+    output_dir = convert_t2i_to_wds(
         data_dirs=args.data_dirs,
         output_dir=args.output_dir,
         max_count=args.max_count,
@@ -145,7 +182,21 @@ def main():
         image_column=args.image_column,
         caption_column=args.caption_column,
     )
+    print("Generating Configurations")
+    split = [args.train_split, args.val_split, args.test_split]
+    generate_configs(
+        EPath(output_dir), split, num_workers=args.num_workers
+    )
+    print("Configurations Generated")
 
 
 if __name__ == "__main__":
     main()
+
+
+"""
+python tools/datasets/bagel/convert_t2i_to_wds.py \
+    --data_dirs /share/project/zhaoyingli/dataset/bagel_example/t2i/ \
+    --output_dir /share/project/zhaoyingli/dataset/bagel_example/t2i/wds/ \
+    --max_count 5000
+"""
