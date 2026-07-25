@@ -2,6 +2,7 @@ import sys
 import traceback
 from functools import lru_cache
 from typing import Any
+from collections import deque
 
 from megatron.core import parallel_state
 from megatron.core.parallel_state import (
@@ -45,6 +46,7 @@ class BagelDataConfig:
         max_num_tokens=36864,
         expected_num_tokens=32768,
         max_num_tokens_per_sample=16384,
+        prefer_buffer_before=16384,
         max_buffer_size=50,
     ):
         self.text_cond_dropout_prob = text_cond_dropout_prob
@@ -57,7 +59,9 @@ class BagelDataConfig:
         self.max_num_tokens = max_num_tokens
         self.expected_num_tokens = expected_num_tokens
         self.max_num_tokens_per_sample = max_num_tokens_per_sample
+        self.prefer_buffer_before = prefer_buffer_before
         self.max_buffer_size = max_buffer_size
+        assert 0 <= prefer_buffer_before <= max_num_tokens
 
 
 @lru_cache(maxsize=16)
@@ -136,7 +140,10 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         # Overflow buffer: samples that didn't fit in the previous pack are held
         # here and prepended to the next select_samples_to_pack call so that no
         # sample is wasted and every yielded pack meets expected_num_tokens.
-        self._overflow_buffer: list = []
+        self._overflow_buffer: deque[tuple[BagelSample, int]] = deque()
+        # Cross-call packing state (Step 5): current pack persists between calls.
+        self._current_pack: list[BagelSample] = []
+        self._current_tokens: int = 0
 
     def _build_transforms(self, subflavors):
         transforms_item = {}
@@ -189,107 +196,55 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         Please see https://nvidia.github.io/Megatron-Energon/advanced/packing.html
         """
         # --- Step 1: Load packing configuration ---
-        # max_tokens: hard ceiling for a single pack (prevents OOM)
-        # max_per_sample: discard any sample longer than this
-        # expected: soft target — once a pack reaches this, emit it
-        # max_buffer_size: cap on how many "doesn't fit" samples we hold locally
-        max_tokens = self.data_config.max_num_tokens
-        max_per_sample = self.data_config.max_num_tokens_per_sample
-        expected = self.data_config.expected_num_tokens
+        max_num_tokens = self.data_config.max_num_tokens
+        max_num_tokens_per_sample = self.data_config.max_num_tokens_per_sample
+        expected_num_tokens = self.data_config.expected_num_tokens
         max_buffer_size = self.data_config.max_buffer_size
+        prefer_buffer_before = self.data_config.prefer_buffer_before
 
-        # --- Step 2: Merge overflow from previous call with new samples ---
-        # Overflow samples are placed first so they get priority (equivalent to
-        # the original code's "prefer_buffer_before" behavior where buffered
-        # samples are consumed before drawing new ones from the data stream).
-        all_samples = self._overflow_buffer + list(samples)
-        self._overflow_buffer = []
-
-        # --- Step 3: Filter out oversized samples ---
-        # Samples exceeding max_num_tokens_per_sample are permanently discarded,
-        # matching the original "skip a sample with length ..." behavior.
-        # Token count includes +2 per segment in sequence_plan (bos/eos overhead).
-        valid_samples = []
-        for s in all_samples:
+        # --- Step 2: Filter out oversized samples and cache token counts ---
+        valid_samples_que: deque = deque()
+        for s in samples:
             token_count = s.num_tokens + 2 * len(s.sequence_plan)
-            if token_count <= max_per_sample:
-                valid_samples.append((s, token_count))
+            if token_count <= max_num_tokens_per_sample:
+                valid_samples_que.append((s, token_count))
 
-        if not valid_samples:
-            return []
+        # --- Step 3: packing with overflow buffer ---
+        packs: list[list[BagelSample]] = []
+        while True:
+            cur_picked_result = None
+            from_buffer = False
+            if self._current_tokens < prefer_buffer_before and self._overflow_buffer:
+                cur_picked_result = self._overflow_buffer.popleft()
+                from_buffer = True
+            elif valid_samples_que:
+                cur_picked_result = valid_samples_que.popleft()
+            elif self._overflow_buffer:
+                cur_picked_result = self._overflow_buffer.popleft()
+                from_buffer = True
 
-        # --- Step 4: Greedy bin-packing with overflow buffer ---
-        # Walk through valid_samples one by one, trying to fit each into
-        # current_pack. Three outcomes per sample:
-        #   (a) Fits and pack not yet full → append to current_pack
-        #   (b) Fits and pack reaches expected → emit pack, start fresh
-        #   (c) Doesn't fit → stash in pending_candidates for later
-        packs = []
-        current_pack = []
-        current_tokens = 0
-        pending_candidates = []
+            # result = self._pick_candidate(self._current_tokens, new_q)
+            if cur_picked_result is None:
+                break
+            sample, token_count = cur_picked_result
 
-        for sample, token_count in valid_samples:
-            if current_tokens + token_count <= max_tokens:
-                # Case (a)/(b): sample fits within the hard limit
-                current_pack.append(sample)
-                current_tokens += token_count
-
-                if current_tokens >= expected:
-                    # Pack reached the soft target — emit it
-                    packs.append(current_pack)
-                    current_pack = []
-                    current_tokens = 0
-
-                    # Drain pending_candidates into the fresh pack immediately.
-                    # This gives previously-buffered (typically large) samples a
-                    # chance to be placed while the new pack is still empty.
-                    for pend_sample, pend_tokens in pending_candidates:
-                        if current_tokens + pend_tokens <= max_tokens:
-                            current_pack.append(pend_sample)
-                            current_tokens += pend_tokens
-                            if current_tokens >= expected:
-                                packs.append(current_pack)
-                                current_pack = []
-                                current_tokens = 0
-                        else:
-                            # Still doesn't fit — persist to cross-call overflow
-                            self._overflow_buffer.append(pend_sample)
-                    pending_candidates = []
+            if self._current_tokens + token_count <= max_num_tokens:
+                self._current_pack.append(sample)
+                self._current_tokens += token_count
+                if self._current_tokens >= expected_num_tokens:
+                    packs.append(self._current_pack)
+                    self._current_pack = []
+                    self._current_tokens = 0
             else:
-                # Case (c): sample would exceed the hard limit for current pack
-                if len(pending_candidates) < max_buffer_size:
-                    # Stash it; we'll try again after the current pack is emitted
-                    pending_candidates.append((sample, token_count))
+                if not from_buffer and len(self._overflow_buffer) < max_buffer_size:
+                    self._overflow_buffer.append((sample, token_count))
                 else:
-                    # Overflow buffer is full — force-emit the current pack even
-                    # though it may not have reached `expected`. This matches the
-                    # original behavior: "buffer full + can't fit → yield batch".
-                    if current_pack:
-                        packs.append(current_pack)
-                    # Start a new pack with the sample that triggered the flush
-                    current_pack = [sample]
-                    current_tokens = token_count
-                    # Try to fit pending_candidates into the new pack
-                    for pend_sample, pend_tokens in pending_candidates:
-                        if current_tokens + pend_tokens <= max_tokens:
-                            current_pack.append(pend_sample)
-                            current_tokens += pend_tokens
-                        else:
-                            self._overflow_buffer.append(pend_sample)
-                    pending_candidates = []
-
-        # --- Step 5: Handle leftover samples at the end of this call ---
-        # current_pack is within max_tokens, but pending_candidates may push
-        # the total over. Only emit if both conditions are met: total tokens
-        # >= expected AND <= max_tokens. Otherwise, hold everything for next call.
-        remaining = current_pack + [s for s, _ in pending_candidates]
-        if remaining:
-            remaining_tokens = sum(s.num_tokens + 2 * len(s.sequence_plan) for s in remaining)
-            if remaining_tokens >= expected and remaining_tokens <= max_tokens:
-                packs.append(remaining)
-            else:
-                self._overflow_buffer.extend(remaining)
+                    # Flush current pack (Step 5). Trigger sample is NOT
+                    # placed as first item of the new pack.
+                    if self._current_pack:
+                        packs.append(self._current_pack)
+                    self._current_pack = []
+                    self._current_tokens = 0
 
         return packs
 
@@ -363,8 +318,21 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples):
         max_num_tokens=getattr(args, "max_num_tokens", 36864),
         expected_num_tokens=getattr(args, "expected_num_tokens", 32768),
         max_num_tokens_per_sample=getattr(args, "max_num_tokens_per_sample", 16384),
+        prefer_buffer_before=getattr(args, "prefer_buffer_before", 16384),
         max_buffer_size=getattr(args, "max_buffer_size", 50),
     )
+
+    # Log packing configuration from rank 0 for reproducibility.
+    if parallel_state.get_data_parallel_rank() == 0:
+        print(
+            f"[BAGEL_PACK_CONFIG]\n"
+            f"  max_buffer_size={bagel_config.max_buffer_size}\n"
+            f"  prefer_buffer_before={bagel_config.prefer_buffer_before}\n"
+            f"  max_num_tokens={bagel_config.max_num_tokens}\n"
+            f"  expected_num_tokens={bagel_config.expected_num_tokens}\n"
+            f"  max_num_tokens_per_sample={bagel_config.max_num_tokens_per_sample}\n"
+            f"  packing_buffer_size={getattr(args, 'packing_buffer_size', 12)}"
+        )
 
     return train_valid_test_dataloaders_provider(
         train_val_test_num_samples,
@@ -410,7 +378,7 @@ def print_error_handler(exc: Exception, key: str | None):
 def cyclic_iter(iterable):
     while True:
         for x in iterable:
-            yield from x
+            yield x
 
 
 class EnergonDataloader:

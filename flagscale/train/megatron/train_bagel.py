@@ -1,202 +1,132 @@
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 """Pretrain BAGEL multimodal model for unified image understanding and generation."""
-import sys
-import warnings
-import logging
-import traceback
-from copy import deepcopy
-from functools import partial
-from typing import Optional
 
 import torch
-from torch.nn.attention.flex_attention import create_block_mask
-
 from megatron.core import parallel_state
 from megatron.core.enums import ModelType
-from megatron.core.models.multimodal import context_parallel
-from megatron.core.models.vision.clip_vit_model import get_num_image_embeddings
-from megatron.core.models.vision.vit_layer_specs import (
-    get_vit_layer_with_transformer_engine_spec,
-)
-from megatron.core.utils import log_single_rank
+
 from megatron.training import (
     get_args,
     get_timers,
-    get_tokenizer,
     pretrain,
     print_rank_0,
 )
-from megatron.training.arguments import core_transformer_config_from_args
-from flagscale.models.megatron.bagel.bagel_model import BagelModel
-from flagscale.models.megatron.bagel.bagel_spec import get_bagel_layer_with_transformer_engine_spec, get_mlp_module_spec
+
+from flagscale.models.megatron.bagel.models import BagelModel
+from flagscale.models.megatron.bagel.model_providers import model_provider_bagel_vlm_t2i
+
 from flagscale.train.megatron.training.multimodal_args import add_multimodal_extra_args
-from flagscale.models.megatron.bagel.config import get_vision_model_config, get_language_model_config
 from flagscale.train.datasets.energon.energon_bagel_task_encoder import bagel_vlm_dataloader_provider
 
+from flagscale.logger import logger
 
-_DATASET_PROVIDERS = {
-    "vlm": bagel_vlm_dataloader_provider,
+_MODEL_PROVIDERS = {
+    "bagel_vlm_t2i": model_provider_bagel_vlm_t2i,
 }
 
 
+_DATASET_PROVIDERS = {
+    "bagel_vlm_t2i": bagel_vlm_dataloader_provider,
+}
+
+
+def count_parameters(module: torch.nn.Module) -> tuple[int, int, int]:
+    total_params = sum(p.numel() for p in module.parameters())
+    trainable_params = sum(p.numel() for p in module.parameters() if p.requires_grad)
+    frozen_params = total_params - trainable_params
+    return total_params, trainable_params, frozen_params
+
+
+def print_trainable_parameters(module: torch.nn.Module, module_name: str = "Model", logger=None):
+    """打印可训练参数的详细信息"""
+    trainable_params = []
+    for name, param in module.named_parameters():
+        if param.requires_grad:
+            trainable_params.append((name, param.shape, param.numel()))
+    
+    if logger:
+        logger.info(f"\n{'='*80}")
+        logger.info(f"{module_name} 可训练参数详情 (共 {len(trainable_params)} 个参数组):")
+        logger.info(f"{'='*80}")
+        total_trainable = 0
+        for name, shape, numel in trainable_params:
+            total_trainable += numel
+            logger.info(f"  {name:80s} | Shape: {str(shape):30s} | Params: {numel:>15,} ({numel/1e6:.2f}M)")
+        logger.info(f"{'='*80}")
+        logger.info(f"总计可训练参数: {total_trainable:,} ({total_trainable/1e9:.2f}B)")
+        logger.info(f"{'='*80}\n")
+    else:
+        print(f"\n{'='*80}")
+        print(f"{module_name} 可训练参数详情 (共 {len(trainable_params)} 个参数组):")
+        print(f"{'='*80}")
+        total_trainable = 0
+        for name, shape, numel in trainable_params:
+            total_trainable += numel
+            print(f"  {name:80s} | Shape: {str(shape):30s} | Params: {numel:>15,} ({numel/1e6:.2f}M)")
+        print(f"{'='*80}")
+        print(f"总计可训练参数: {total_trainable:,} ({total_trainable/1e9:.2f}B)")
+        print(f"{'='*80}\n")
+
+
 def model_provider(
-    pre_process=True, post_process=True, add_encoder=True, add_decoder=True, parallel_output=True,
-    vp_stage=None, config=None, pg_collection=None
-) -> BagelModel:
-    """Build the BAGEL multimodal model.
-
-    Args:
-        pre_process (bool): Include the embedding layer in the gpt decoder (used with pipeline parallelism). Defaults to True.
-        post_process (bool): Include an output layer and a layernorm in the gpt decoder (used with pipeline parallelism). Defaults to True.
-        add_encoder (bool): Construct the encoder module (used with pipeline parallelism). Defaults to True. When we use pipelining, the encoder
-            will live on only a subset of the pipeline stages (specifically, only the first stage).
-        add_decoder (bool): Construct the decoder module (used with pipeline parallelism). Defaults to True. When we use pipelining, the decoder
-            will live on only a subset of the pipeline stages (specifically, every stage after the first one).
-        parallel_output (bool): Enable model parallel output.
-
-    Returns:
-        model (megatron.core.models.multimodal.bagel_model.BagelModel): A multimodal model
-    """
+    pre_process=True,
+    post_process=True,
+    vp_stage=None,
+    config=None,
+    pg_collection=None,
+):
     args = get_args()
     args.use_te = args.transformer_impl == "transformer_engine"
 
-    assert args.use_te
-    assert args.ckpt_format == 'torch', "Only ckpt-format torch is supported for VLM training currently."
-    assert not (args.context_parallel_size > 1 and args.pipeline_model_parallel_size > 1), "PP+CP is not yet supported by this script. \
-    Current mock dataset does not support natively packed sequence dataset required for correct PP comm shapes."
-
-    num_image_embeddings = get_num_image_embeddings(
-        args.image_size,
-        args.image_size,
-        args.patch_dim,
-        args.vision_model_type,
-        args.disable_vision_class_token,
-        1,
-        args.pixel_shuffle,
-        args.use_tile_tags,
-        args.max_num_tiles,
-        args.tokenizer_prompt_format
-    )
-    old_seq_length = args.seq_length
-    args.decoder_seq_length = args.max_position_embeddings
-    # seq_length and encoder_seq_length denote the vision model sequence length. Override if the user provided something else.
-    args.seq_length = args.encoder_seq_length = num_image_embeddings
-    if torch.distributed.get_rank() == 0 and old_seq_length != args.seq_length:
-        log_single_rank(
-            logging.getLogger(__name__),
-            logging.WARNING,
-            f"Changed seq_length and encoder_seq_length (vision model sequence length) from {old_seq_length} to num_image_tokens ({num_image_embeddings})"
+    if args.record_memory_history:
+        torch.cuda.memory._record_memory_history(
+            True,
+            # keep 100,000 alloc/free events from before the snapshot
+            trace_alloc_max_entries=100000,
+            # record stack information for the trace events
+            trace_alloc_record_context=True,
         )
 
-    print_rank_0('building Bagel: a multimodal model ...')
-    print_rank_0(f'{num_image_embeddings=}')
+        def oom_observer(device, alloc, device_alloc, device_free):
+            # snapshot right after an OOM happened
+            print('saving allocated state during OOM')
 
-    # --- Language model layer spec (MoT) ---
-    base_config = core_transformer_config_from_args(get_args())
-    base_config.language_model_type = args.language_model_type
-    base_config.vision_model_type = args.vision_model_type
-    base_config.calculate_per_token_loss = True
-    base_config.variable_seq_lengths = True
+            filename = f"oom_rank-{torch.distributed.get_rank()}_{args.memory_snapshot_path}"
+            torch.cuda.memory._dump_snapshot(filename)
 
-    if args.decoder_num_layers is not None:
-        base_config.num_layers = args.decoder_num_layers
-    else:
-        base_config.num_layers = args.num_layers
+        torch._C._cuda_attach_out_of_memory_observer(oom_observer)
 
-    language_config = deepcopy(base_config)
-    language_config = get_language_model_config(language_config)
-    print(f"{language_config=}")
+    try:
+        builder_fn = _MODEL_PROVIDERS[args.model_provider]
+    except KeyError as e:
+        raise ValueError(
+            f"Unsupported model provider '{args.model_provider}'. "
+            f"Available providers: {list(_MODEL_PROVIDERS.keys())}"
+        ) from e
 
-    language_transformer_layer_spec = get_bagel_layer_with_transformer_engine_spec(
-        qk_layernorm=args.qk_layernorm
-    )
-
-    # --- Vision model config ---
-    vision_config = deepcopy(base_config)
-    vision_config = get_vision_model_config(
-        vision_config, args.apply_query_key_layer_scaling
-    )
-
-    vision_config.first_pipeline_num_layers = None
-    vision_config.last_pipeline_num_layers = None
-    vision_config.context_parallel_size = 1 # Force CP=1 for Vision Transformer
-    if vision_config.sequence_parallel:
-        print_rank_0("> Disabling Sequence parallelism in Vision Transformer. Not yet supported")
-        vision_config.sequence_parallel = False
-    if vision_config.tp_comm_overlap:
-        print_rank_0("> Disabling TP Comm overlap in Vision Transformer. Not yet supported")
-        vision_config.tp_comm_overlap = False
-    # Vision Encoder should live on PP rank0
-    vision_config.pipeline_model_parallel_size = 1
-    print(f"{vision_config=}")
-
-    # --- Vision layer spec ---
-    vision_transformer_layer_spec = get_vit_layer_with_transformer_engine_spec()
-
-    # --- Vision projection config ---
-    vision_projection_type = "mlp"
-    vision_projection_config = deepcopy(base_config)
-    vision_projection_config.context_parallel_size = 1
-    if vision_projection_config.sequence_parallel:
-        print_rank_0("> Disabling Sequence parallelism in Vision Projection. Not yet supported")
-        vision_projection_config.sequence_parallel = False
-    if vision_projection_config.tp_comm_overlap:
-        print_rank_0("> Disabling TP Comm overlap in Vision Projection. Not yet supported")
-        vision_projection_config.tp_comm_overlap = False
-    # Projection should live on PP rank0
-    vision_projection_config.pipeline_model_parallel_size = 1
-    vision_projection_layer_spec = get_mlp_module_spec(use_te=args.use_te).submodules
-
-    assert args.context_parallel_size == 1
-    # language_max_sequence_length = args.decoder_seq_length
-    # if args.context_parallel_size > 1:
-    #     if args.use_packed_sequence or mp_padding_needed > 0:
-    #         # Use THD data format
-    #         language_max_sequence_length = args.decoder_seq_length * args.micro_batch_size
-
-    print(f"{pre_process=}, {post_process=}, {add_encoder=}, {add_decoder=}")
-    # --- Build model ---
-    model = BagelModel(
-        language_transformer_config=language_config,
-        language_transformer_layer_spec=language_transformer_layer_spec,
-        language_vocab_size=args.padded_vocab_size,
-        language_max_sequence_length=args.decoder_seq_length,
-        vision_transformer_config=vision_config,
-        vision_transformer_layer_spec=vision_transformer_layer_spec,
-        vision_projection_config=vision_projection_config,
-        vision_projection_layer_spec=vision_projection_layer_spec,
-        vision_projection_type=vision_projection_type,
-        parallel_output=parallel_output,
-        share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
-        language_position_embedding_type=args.position_embedding_type,
-        language_rotary_percent=args.rotary_percent,
-        visual_gen=getattr(args, 'visual_gen', True),
-        visual_und=getattr(args, 'visual_und', True),
-        latent_patch_size=getattr(args, 'latent_patch_size', 2),
-        max_latent_size=getattr(args, 'max_latent_size', 32),
-        vit_max_num_patch_per_side=getattr(args, 'vit_max_num_patch_per_side', 70),
-        latent_channel=getattr(args, 'latent_channel', 16),
-        vae_downsample=getattr(args, 'vae_downsample', 16),
-        timestep_shift=getattr(args, 'timestep_shift', 1.0),
-        pre_process=pre_process,
-        post_process=post_process,
-        add_encoder=add_encoder,
-        add_decoder=add_decoder,
-        image_size=args.image_size,
-        patch_dim=args.patch_dim,
-        language_rotary_base=args.rotary_base,
-        language_rope_scaling=args.use_rope_scaling,
-    )
-    print(f"{model=}")
-
-    # --- Freeze components ---
-    model.freeze(
-        freeze_language_model=getattr(args, 'freeze_LM', False),
-        freeze_vision_model=getattr(args, 'freeze_ViT', False),
-        freeze_vision_projection=getattr(args, 'freeze_vision_projection', False),
-    )
+    model = builder_fn(pre_process=pre_process, post_process=post_process, pg_collection=pg_collection)
+    total_params, total_trainable, total_frozen = count_parameters(model)
+    lm_params, lm_trainable, lm_frozen = count_parameters(model.language_model)
+    print_rank_0(f"Model parameter count: {total_params / 1e9:.2f}B (Trainable: {total_trainable / 1e9:.2f}B, Frozen: {total_frozen / 1e9:.2f}B)")
+    print_rank_0(f"LM parameter count:    {lm_params / 1e9:.2f}B (Trainable: {lm_trainable / 1e9:.2f}B, Frozen: {lm_frozen / 1e9:.2f}B)")
+    print_trainable_parameters(model, "完整模型", logger)
+    print_trainable_parameters(model.language_model, "语言模型", logger)
 
     return model
+
+
+def train_valid_test_datasets_provider(train_val_test_num_samples):
+
+    args = get_args()
+    try:
+        dataset_provider = _DATASET_PROVIDERS[args.dataset_provider]
+    except KeyError as e:
+        raise ValueError(
+            f"Unsupported dataset provider '{args.dataset_provider}'. "
+            f"Available providers: {list(_DATASET_PROVIDERS.keys())}"
+        ) from e
+
+    return dataset_provider(train_val_test_num_samples)
 
 
 def get_batch(data_iterator):
@@ -276,11 +206,10 @@ def get_batch(data_iterator):
     return batch
 
 
-def bagel_loss_func(loss_mask, output_tensor, model=None):
+def bagel_loss_func(output_tensor, model=None):
     """Loss function for BAGEL that combines CE and MSE losses.
 
     Args:
-        loss_mask: Loss mask tensor.
         output_tensor: Combined loss tensor from forward_step.
         model: The model (unused).
 
@@ -288,10 +217,8 @@ def bagel_loss_func(loss_mask, output_tensor, model=None):
         Tuple of (loss, num_tokens, report_dict).
     """
     losses = output_tensor.view(-1).float()
-    loss_mask = loss_mask.view(-1).float()
-
-    loss = torch.sum(losses * loss_mask)
-    num_tokens = loss_mask.sum().clone().detach().to(torch.int)
+    loss = losses.sum()
+    num_tokens = torch.ones((), device=loss.device, dtype=torch.int)
 
     report = {'lm loss': torch.cat([loss.clone().detach().view(1), num_tokens.view(1)])}
 
@@ -306,8 +233,7 @@ def forward_step(data_iterator, model: BagelModel):
         model: BagelModel instance.
 
     Returns:
-        output_tensor: Combined loss tensor.
-        loss_func: Partial loss function with loss mask.
+        Tuple of the combined loss tensor and Megatron loss callback.
     """
     args = get_args()
     timers = get_timers()
@@ -316,9 +242,6 @@ def forward_step(data_iterator, model: BagelModel):
     timers('batch-generator', log_level=2).start()
     batch = get_batch(data_iterator)
     timers('batch-generator').stop()
-
-    ce_weight = getattr(args, 'ce_weight', 1.0)
-    mse_weight = getattr(args, 'mse_weight', 1.0)
 
     # Forward pass — batch keys match model forward signature directly
     output = model(
@@ -333,7 +256,6 @@ def forward_step(data_iterator, model: BagelModel):
         # CE loss
         packed_label_ids=batch.get('packed_label_ids'),
         ce_loss_indexes=batch.get('ce_loss_indexes'),
-        ce_loss_weights=batch.get('ce_loss_weights'),
         # ViT understanding
         packed_vit_tokens=batch.get('packed_vit_tokens'),
         packed_vit_token_indexes=batch.get('packed_vit_token_indexes'),
@@ -348,28 +270,86 @@ def forward_step(data_iterator, model: BagelModel):
         mse_loss_indexes=batch.get('mse_loss_indexes'),
     )
 
-    # Combine CE and MSE losses into a single tensor
-    loss_parts = []
-    if output.get('ce') is not None:
-        loss_parts.append(ce_weight * output['ce'].mean())
-    if output.get('mse') is not None:
-        loss_parts.append(mse_weight * output['mse'].mean())
+    ce, mse, dummy = output
+    device = batch['packed_text_ids'].device
+    ce_loss_indexes = batch.get('ce_loss_indexes')
+    ce_loss_weights = batch.get('ce_loss_weights')
+    local_ce_tokens = (
+        ce_loss_indexes.numel()
+        if ce is not None and ce_loss_indexes is not None
+        else 0
+    )
+    local_ce_loss_weights = (
+        ce_loss_weights.float().sum()
+        if getattr(args, 'ce_loss_reweighting', False) and ce_loss_weights is not None and local_ce_tokens > 0
+        else 0
+    )
 
-    if loss_parts:
-        combined_loss = sum(loss_parts)
-    else:
-        combined_loss = torch.tensor(0.0, device=batch['packed_text_ids'].device, requires_grad=True)
+    mse_loss_indexes = batch.get('mse_loss_indexes')
+    local_mse_tokens = (
+        mse_loss_indexes.numel()
+        if getattr(args, 'visual_gen', False) and mse is not None and mse_loss_indexes is not None
+        else 0
+    )
 
-    # Use ce_loss_weights for the standard loss reduction path
-    loss_mask = batch.get('ce_loss_weights', torch.ones_like(combined_loss))
+    total_tokens = torch.tensor(
+        [local_ce_tokens, local_ce_loss_weights, local_mse_tokens],
+        device=device, dtype=torch.float64
+    )
+    dp_group = parallel_state.get_data_parallel_group(with_context_parallel=True)
+    dp_world_size = torch.distributed.get_world_size(group=dp_group)
+    torch.distributed.all_reduce(total_tokens, group=dp_group)
+    (
+        total_ce_tokens,
+        total_ce_loss_weights,
+        total_mse_tokens,
+    ) = total_tokens
 
-    return combined_loss.unsqueeze(0), partial(bagel_loss_func, loss_mask)
+    combined_loss = torch.tensor(0.0, device=device)
+    if local_ce_tokens > 0 and total_ce_tokens.item() > 0:
+        if getattr(args, 'ce_loss_reweighting', False):
+            assert ce_loss_weights is not None, "ce_loss_reweighting=True but ce_loss_weights is missing"
+            ce = ce * ce_loss_weights
+            ce = ce.sum() * dp_world_size / total_ce_loss_weights.clamp_min(1e-12)
+        else:
+            ce = ce.sum() * dp_world_size / total_ce_tokens
+        combined_loss = combined_loss + ce * getattr(args, 'ce_weight', 1.0)
+
+    if local_mse_tokens > 0 and total_mse_tokens.item() > 0:
+        mse = mse.mean(dim=-1).sum() * dp_world_size / total_mse_tokens
+        combined_loss = combined_loss + mse * getattr(args, 'mse_weight', 1.0)
+
+    print(f"{ce=}, {mse=}")
+
+    combined_loss = combined_loss + dummy
+
+    if torch.distributed.get_rank() == 0:
+        print(
+            "[BAGEL_LOSS_GRAPH]",
+            f"ce_shape={None if ce is None else tuple(ce.shape)}",
+            f"ce_grad_fn={None if ce is None else ce.grad_fn}",
+            f"mse_shape={None if mse is None else tuple(mse.shape)}",
+            f"mse_grad_fn={None if mse is None else mse.grad_fn}",
+            f"combined_grad_fn={combined_loss.grad_fn}",
+            flush=True,
+        )
+
+    return combined_loss.unsqueeze(0), bagel_loss_func
 
 
 def add_bagel_extra_args(parser):
     """Add BAGEL-specific command-line arguments."""
     parser = add_multimodal_extra_args(parser)
     group = parser.add_argument_group(title='BAGEL model arguments')
+
+    group.add_argument(
+        '--dataset-provider', type=str,
+        default='mock', help='Dataset provider to choose from [mock, bagel_vlm]'
+    )
+    group.add_argument(
+        '--model-provider', type=str,
+        default='mock', help='Model provider to choose from [mock, bagel_vlm]'
+    )
 
     # Modality switches
     group.add_argument(
@@ -426,11 +406,31 @@ def add_bagel_extra_args(parser):
         '--mse-weight', type=float, default=1.0,
         help='Weight for MSE (generation) loss',
     )
+    group.add_argument(
+        '--ce-loss-reweighting', action='store_true', default=False,
+        help='Reweight CE loss using per-token ce_loss_weights.',
+    )
 
     # Freeze controls
     group.add_argument(
-        '--freeze-vision-projection', action='store_true', default=False,
-        help='Freeze vision projection weights',
+        '--freeze-VAE', action='store_true', default=False,
+        help='Keep VAE weights fixed; only predict latents, don’t fine-tune encoder/decoder.'
+    )
+    group.add_argument(
+        '--freeze-text-embed', action='store_true', default=False,
+        help='Freeze text embedding and lm_head (embed_tokens, lm_head).'
+    )
+    group.add_argument(
+        '--freeze-connect', action='store_true', default=False,
+        help='Freeze vit and vae connector modules (vit connector, vae2llm, llm2vae, time_embedder).'
+    )
+    group.add_argument(
+        '--freeze-und', action='store_true', default=False,
+        help='Freeze the visual understanding connector layers by requires_grad=False.'
+    )
+    group.add_argument(
+        '--freeze-gen', action='store_true', default=False,
+        help='Freeze the image generation connector layers by requires_grad=False.'
     )
 
     # for dataset
@@ -438,20 +438,31 @@ def add_bagel_extra_args(parser):
         '--vit-patch-size', type=int, default=14,
         help='Patch size (pixels) for the Vision Transformer encoder.'
     )
+    # for packing data
+    group.add_argument(
+        '--expected-num-tokens', type=int, default=32768,
+        help='Soft target token count per packed batch; yield once reached.',
+    )
+    group.add_argument(
+        '--max-num-tokens', type=int, default=36864,
+        help='Hard upper limit on tokens in a packed batch.',
+    )
+    group.add_argument(
+        '--max-num-tokens-per-sample', type=int, default=16384,
+        help='Maximum tokens allowed in one raw sample; longer samples are skipped.',
+    )
+    group.add_argument(
+        '--max-buffer-size', type=int, default=50,
+        help='Maximum number of overflow samples kept by BAGEL packing.',
+    )
+    group.add_argument(
+        "--prefer-buffer-before",
+        type=int,
+        default=16384,
+        help="Prefer FIFO overflow samples while current packed length is below this threshold.",
+    )
 
     return parser
-
-
-def train_valid_test_datasets_provider(train_val_test_num_samples):
-    args = get_args()
-    kwargs = {}
-    dataset_provider = _DATASET_PROVIDERS["vlm"]
-    # max_seq_length = args.total_seq_length
-    # kwargs['max_seq_length'] = max_seq_length
-    # print_rank_0(f"Bagel Training: Using max_seq_length = {max_seq_length} "
-    #             f"(total_seq_length: {args.total_seq_length})")
-    kwargs['max_seq_length'] = 32078
-    return dataset_provider(train_val_test_num_samples, **kwargs)
 
 
 if __name__ == "__main__":

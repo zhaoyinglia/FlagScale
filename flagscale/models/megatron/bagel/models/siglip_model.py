@@ -62,6 +62,7 @@ class SiglipVisionModel(VisionModule):
         self.image_size = image_size
         self.pg_collection = pg_collection
         self.vp_stage = vp_stage
+        self.use_rope = bool(getattr(transformer_config, "rope", False))
 
         self.patch_embedding = nn.Conv2d(
             in_channels=3,
@@ -72,13 +73,20 @@ class SiglipVisionModel(VisionModule):
         )
 
         max_num_patches_per_side = self.image_size // self.patch_dim
-        # Learned 2D position embeddings indexed by flattened position ids
-        num_positions = max_num_patches_per_side * max_num_patches_per_side
-        self.position_embeddings = nn.Embedding(
-            num_positions,
-            self.visual_hidden_size,
-            dtype=transformer_config.params_dtype,
-        )
+        if self.use_rope:
+            raise NotImplementedError(
+                "SiglipVisionModel rope=True requires Bagel's split H/W 2D RoPE "
+                "inside vision self-attention; Megatron's standard ViT attention "
+                "does not implement that layout yet."
+            )
+        else:
+            # Match Bagel siglip_navit.py with config.rope=False.
+            num_positions = max_num_patches_per_side * max_num_patches_per_side
+            self.position_embeddings = nn.Embedding(
+                num_positions,
+                self.visual_hidden_size,
+                dtype=transformer_config.params_dtype,
+            )
 
         # Post layer norm (SigLIP style: no pre-LN, has post-LN)
         self.ln_post = build_module(
@@ -142,8 +150,9 @@ class SiglipVisionModel(VisionModule):
         # Patch embedding
         x = self.patch_embedding(packed_pixel_values)  # [total_patches, hidden_size]
 
-        # Add position embeddings
-        x = x + self.position_embeddings(packed_flattened_position_ids)
+        # Bagel uses learned absolute position embeddings when config.rope=False.
+        if not self.use_rope:
+            x = x + self.position_embeddings(packed_flattened_position_ids)
 
         # Reshape for TransformerBlock: [seq_len, batch=1, hidden_size]
         x = x.unsqueeze(1)

@@ -521,7 +521,11 @@ def _build_rwkv(args, **kwargs):
 
 def _build_bagel(args, **kwargs):
     assert args.tokenizer_path
-    return _BagelTokenizerFS(args.tokenizer_path)
+    tokenizer = _BagelTokenizerFS(args.tokenizer_path)
+    # Released BAGEL embeddings include padded vocabulary rows.
+    if args.vocab_size is not None:
+        args.padded_vocab_size = args.vocab_size
+    return tokenizer
 
 
 register_tokenizer_factory('AquilaTokenizerFS', _build_aquila)

@@ -1976,7 +1976,12 @@ def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, load_arg='load', 
                          'exiting ...'.format(checkpoint_name))
             raise e
     else:
-        if (args.fp16 or args.bf16) and optimizer is not None:
+        # fix for load fsdp_dtensor ckpt
+        if (
+            (args.fp16 or args.bf16)
+            and optimizer is not None
+            and not args.use_megatron_fsdp
+        ):
             if args.load_main_params_from_ckpt:
                 optimizer.reload_model_params(state_dict=state_dict)
             else:

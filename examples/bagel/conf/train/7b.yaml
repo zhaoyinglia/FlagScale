@@ -17,6 +17,15 @@ system:
   recompute_granularity: "full"
   recompute_num_layers: 1
 
+  # profile
+  profile: true
+  profile_step_start: 0
+  profile_step_end: 5
+  use_pytorch_profiler: true
+  record_memory_history: true
+  profile_ranks: [0, 1, 2, 3, 4, 5, 6, 7]
+  # nvtx_ranges: true
+
   # # block recompute
   # recompute_method: "block"
   # recompute_granularity: "full"
@@ -39,7 +48,7 @@ system:
     # wandb_exp_name: bagel_7b_mot_8gpu
   checkpoint:
     save_interval: 5000000
-    load: null #/workspace/new_agent_v2/models/BAGEL-7B-MoT-megatron-tp2-ema
+    load: /share/project/zhaoyingli/checkpoints/ByteDance-Seed/BAGEL-7B-MoT-fsdp-dtensor/
     no_load_optim: true
     no_load_rng: true
     # ckpt_format: torch
@@ -48,6 +57,8 @@ system:
 model:
   # LLM Architecture
   language_model_type: qwen2.5_7B
+  dataset_provider: bagel_vlm_t2i
+  model_provider: bagel_vlm_t2i
   transformer_impl: transformer_engine
   num_layers: 28
   hidden_size: 3584
@@ -68,7 +79,8 @@ model:
   untie_embeddings_and_output_weights: true
   no_rope_fusion: true
   qk_layernorm: true
-  disable_bias_linear: false
+  disable_bias_linear: true
+  add_qkv_bias: true
   attention_backend: auto
 
   # freeze model
@@ -76,6 +88,7 @@ model:
   freeze_ViT: true
   freeze_VAE: true
   freeze_text_embed: true
+  freeze_connect: false
 
   # freeze branch
   freeze_und: false
@@ -85,11 +98,6 @@ model:
   vision_model_type: siglip
   patch_dim: 14
   image_size: 980
-
-  # packing
-  max_num_tokens: 30720
-  max_num_tokens_per_sample: 30720
-  expected_num_tokens: 30720
 
   # vit_hidden_size: 1152
   # vit_ffn_hidden_size: 4304
@@ -114,7 +122,7 @@ model:
 
   # training
   finetune: false
-  train_iters: 3000
+  train_iters: 300000
   eval_iters: 0
   eval_interval: 999999
   micro_batch_size: 1
@@ -124,10 +132,9 @@ model:
 
   optimizer:
     lr: 1e-4
-    # min_lr: 1e-7
-    # weight_decay: 0.0
-    # lr_warmup_iters: 2500
-    # lr_decay_style: constant
+    lr_warmup_init: 0.0
+    lr_warmup_iters: 2500
+    lr_decay_style: constant
     adam_beta1: 0.9
     adam_beta2: 0.95
     adam_eps: 1e-15
@@ -138,8 +145,16 @@ data:
   # data_path: /share/project/zhaoyingli/dataset/bagel_example/vlm/wds/
   data_path: /share/project/zhaoyingli/bagel-fs/FlagScale/examples/bagel/data/pretrain_dataset.yaml
   split: "1,0,0"
-  num_workers: 2
-  packing_buffer_size: 24
+  num_workers: 1
+
+  # packing
+  max_num_tokens: 30720
+  max_num_tokens_per_sample: 30720
+  expected_num_tokens: 30720
+  packing_buffer_size: 50
+  max_buffer_size: 50
+  prefer_buffer_before: 16384
+
   tokenizer:
     tokenizer_type: BagelTokenizerFS
     tokenizer_path: /share/project/zhaoyingli/checkpoints/ByteDance-Seed/BAGEL-7B-MoT/
