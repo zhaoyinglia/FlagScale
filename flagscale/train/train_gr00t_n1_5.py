@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Mainly adopted from
 # https://github.com/huggingface/lerobot/blob/2b304eeb841ae6c371e3dd341bbbb9dd254b07cb/src/lerobot/scripts/lerobot_train.py
 
@@ -516,7 +530,7 @@ def main(config: TrainConfig, seed: int):
     step = 0
     resume_from = config.system.checkpoint.resume_from
     if resume_from:
-        step = load_training_state_fsdp2(
+        step, _dl_state = load_training_state_fsdp2(
             Path(resume_from), policy, optimizer, lr_scheduler,
         )
         saved_rng = serialize_rng_state()

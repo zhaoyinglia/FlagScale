@@ -1,4 +1,19 @@
 #!/bin/bash
+
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Prepare the Python/runtime environment for training tests.
 set -euo pipefail
 
@@ -107,7 +122,8 @@ setup_cuda_training_env() {
         websocket==0.2.1 \
         websockets==15.0.1 \
         msgpack==1.1.0 \
-        datasets==4.5.0
+        datasets==4.5.0 \
+        https://baai-flagscale.ks3-cn-beijing.ksyuncs.com/whl/fast_hadamard_transform-1.1.0%2Bcu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl
 }
 
 setup_metax_training_env() {
