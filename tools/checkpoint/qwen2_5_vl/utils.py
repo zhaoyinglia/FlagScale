@@ -1,3 +1,17 @@
+# Copyright 2026 FlagOS Contributors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copied from https://github.com/alibaba/Pai-Megatron-Patch/blob/8949a6647cbf6b39837ad3dd911fa4aa0726895b/toolkits/model_checkpoints_convertor/utils/__init__.py.
 
 import gc
@@ -174,7 +188,9 @@ def safe_copy(src_tensor: torch.Tensor, dst_tensor: torch.Tensor, skip_dtype_ass
             raise ValueError(
                 f"Get source dtype {src_tensor.dtype}, but target dtype {dst_tensor.dtype}"
             )
-    assert src_tensor.shape == dst_tensor.shape
+    assert src_tensor.shape == dst_tensor.shape, (
+        f"Get source shape {src_tensor.shape}, but target shape {dst_tensor.shape}"
+    )
     dst_tensor.data.copy_(src_tensor.data)
     return src_tensor.numel()
 

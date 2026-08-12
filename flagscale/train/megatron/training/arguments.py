@@ -2098,6 +2098,7 @@ def _add_network_size_args(parser):
         "persist_layer_norm",
         "bias_dropout_fusion",
         "apply_rope_fusion",
+        "apply_dsa_kernel_fusion",
         # FlagScale-specific: manually added in arguments_fs.py
         "enable_hetero",
         "hetero_pipeline_layer_split",
@@ -3268,6 +3269,12 @@ def _add_mla_args(parser):
         help="Enable fused q/kv down-projection and fused input layernorm when backend supports. "
              "Otherwise fall back to the unfused MLA.",
     )
+    group.add_argument(
+            '--original-max-position-embeddings',
+            type=int,
+            default=4096,
+            help="Original maximum position embeddings for the original model, used by yarn.",
+        )
 
     return parser
 
@@ -3297,6 +3304,13 @@ def _add_experimental_attention_variant_args(parser):
                             "([128]+[4]*23)": 1 HCA layer followed by 23 CSA layers
                             "([128]*3+[4]*2)*2": Three HCA layers followed by two CSA layers, repeated twice.
                         """)
+    group.add_argument(
+        '--no-dsa-kernel-fusion',
+        action='store_false',
+        help='Disable fused DSA sparse-attention kernels (FlashMLA + cuDNN DSA) '
+        'and fall back to unfused PyTorch implementations.',
+        dest='apply_dsa_kernel_fusion',
+    )
     return parser
 
 def _add_heterogeneous_args(parser):
