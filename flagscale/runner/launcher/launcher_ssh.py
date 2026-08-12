@@ -236,6 +236,7 @@ class SshLauncher(LauncherBase):
             runner_cmd = _get_runner_cmd_train(
                 host, master_addr, master_port, nnodes, node_rank, nproc_per_node, self.config
             )
+            nsys_rep_dir = None
 
             # Optional Nsight Systems profiling (nsys)
             runner_cfg = self.config.experiment.runner
@@ -255,6 +256,7 @@ class SshLauncher(LauncherBase):
                     ".nsys-rep" not in rep_path and "$HOSTNAME" not in rep_path
                 ):
                     rep_path = rep_path.rstrip("/") + "/$HOSTNAME.nsys-rep"
+                nsys_rep_dir = os.path.dirname(rep_path)
                 nsys_cmd = [
                     nsys_exe,
                     "profile",
@@ -279,6 +281,10 @@ class SshLauncher(LauncherBase):
                 else:
                     self.user_args += ["--hetero-current-device-type", device_type]
             cmd = shlex.join(export_cmd + runner_cmd + [self.user_script] + self.user_args)
+            if nsys_rep_dir:
+                # The command is executed on each target node, so create the report
+                # directory there before nsys attempts to open its output file.
+                cmd = f"mkdir -p {shlex.quote(nsys_rep_dir)} && {cmd}"
             # update cmd with node_specific_config
             node_specific_config = {}
             if device_type is not None:
