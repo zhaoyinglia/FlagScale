@@ -129,7 +129,6 @@ class AudioTransform:
             norm="slaney",
             mel_scale="slaney",
         )
-        print(f"{self.chunk_length=}, {self.n_samples=}")
 
     def __call__(self, waveform: np.ndarray) -> tuple:
         """

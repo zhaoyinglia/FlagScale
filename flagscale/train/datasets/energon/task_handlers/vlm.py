@@ -28,12 +28,10 @@ class VLMHandler(BaseTaskHandler):
         transform = kwargs.get("transform")
         frame_sampler = kwargs.get("frame_sampler")
 
-        print(f"{sample=}")
         data_item = sample.get("json_data")
         images = sample.get("images", [])
         video_bytes = sample.get("video_bytes", None)
         conversations = data_item.get("conversations", [])
-        print(f"{data_item=}, {conversations=}, {images=}, {video_bytes=}")
 
         image_tensor_list = []
         text_ids_list = []

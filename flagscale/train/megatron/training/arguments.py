@@ -1061,7 +1061,6 @@ def validate_args(args, defaults={}):
         args.params_dtype = torch.bfloat16
         # bfloat16 requires gradient accumulation and all-reduce to
         # be done in fp32.
-        print(f"{args.accumulate_allreduce_grads_in_fp32=}")
         if args.accumulate_allreduce_grads_in_fp32:
             assert args.main_grads_dtype == torch.float32, \
                 "--main-grads-dtype can only be fp32 when --accumulate-allreduce-grads-in-fp32 is set"

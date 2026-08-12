@@ -227,7 +227,6 @@ def to_tensor(sequence_status: dict[str, Any], max_num_tokens: int) -> BagelPack
     """Convert accumulated sequence_status into a BagelPackedBatch."""
     sequence_length = sum(sequence_status["sample_lens"])
     pad_len = max_num_tokens - sequence_length
-    print(f"{pad_len=}")
 
     batch = BagelPackedBatch(
         sequence_length=sequence_length,

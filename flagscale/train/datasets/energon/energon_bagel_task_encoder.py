@@ -1,8 +1,11 @@
+from collections import deque
+from functools import lru_cache
+from pathlib import Path
 import sys
 import traceback
-from functools import lru_cache
 from typing import Any
-from collections import deque
+
+import yaml
 
 from megatron.core import parallel_state
 from megatron.core.parallel_state import (
@@ -48,6 +51,7 @@ class BagelDataConfig:
         max_num_tokens_per_sample=16384,
         prefer_buffer_before=16384,
         max_buffer_size=50,
+        mandatory_tasks=(),
     ):
         self.text_cond_dropout_prob = text_cond_dropout_prob
         self.vit_cond_dropout_prob = vit_cond_dropout_prob
@@ -61,6 +65,7 @@ class BagelDataConfig:
         self.max_num_tokens_per_sample = max_num_tokens_per_sample
         self.prefer_buffer_before = prefer_buffer_before
         self.max_buffer_size = max_buffer_size
+        self.mandatory_tasks = tuple(mandatory_tasks)
         assert 0 <= prefer_buffer_before <= max_num_tokens
 
 
@@ -137,13 +142,48 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         self._tp_size = getattr(_args, "tensor_model_parallel_size", 1)
         self._sequence_parallel = getattr(_args, "sequence_parallel", False)
 
-        # Overflow buffer: samples that didn't fit in the previous pack are held
-        # here and prepended to the next select_samples_to_pack call so that no
-        # sample is wasted and every yielded pack meets expected_num_tokens.
+        # State persists across Energon's finite candidate windows.
         self._overflow_buffer: deque[tuple[BagelSample, int]] = deque()
-        # Cross-call packing state (Step 5): current pack persists between calls.
+        self._pending_samples: deque[tuple[BagelSample, int]] = deque()
         self._current_pack: list[BagelSample] = []
         self._current_tokens: int = 0
+
+    def _seed_mandatory_samples(self) -> bool:
+        """Start a pack with one pending sample from every mandatory task."""
+        mandatory_tasks = self.data_config.mandatory_tasks
+        if self._current_pack or not mandatory_tasks:
+            return True
+
+        pending_tasks = {sample.subflavor for sample, _ in self._pending_samples}
+        if any(task not in pending_tasks for task in mandatory_tasks):
+            return False
+
+        selected = []
+        remaining = deque()
+        needed = set(mandatory_tasks)
+        while self._pending_samples:
+            item = self._pending_samples.popleft()
+            sample, _ = item
+            if sample.subflavor in needed:
+                selected.append(item)
+                needed.remove(sample.subflavor)
+            else:
+                remaining.append(item)
+        self._pending_samples = remaining
+
+        mandatory_tokens = sum(token_count for _, token_count in selected)
+        if mandatory_tokens > self.data_config.max_num_tokens:
+            task_lengths = {
+                sample.subflavor: token_count for sample, token_count in selected
+            }
+            raise RuntimeError(
+                "mandatory BAGEL samples exceed max_num_tokens: "
+                f"{task_lengths=}, max_num_tokens={self.data_config.max_num_tokens}"
+            )
+
+        self._current_pack.extend(sample for sample, _ in selected)
+        self._current_tokens = mandatory_tokens
+        return True
 
     def _build_transforms(self, subflavors):
         transforms_item = {}
@@ -181,16 +221,16 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         - Uses expected_num_tokens as the soft threshold to yield a pack
         - Uses max_num_tokens as the hard upper limit per pack
         - Samples exceeding max_num_tokens_per_sample are skipped
-        - If the last pack doesn't reach expected_num_tokens, its samples are
-          held in the overflow buffer for the next call (no short batches)
+        - Starts each pack with one sample from every configured mandatory task
+        - Keeps incomplete pack and candidate state across Energon calls
 
         Args:
             samples: List of samples from Energon's reading buffer.
 
         Returns:
             List of groups where each group is a list of samples to pack together.
-            Every returned pack is guaranteed to have >= expected_num_tokens
-            (except when the data source is exhausted).
+            Buffer-full flushes may return a pack below expected_num_tokens,
+            matching the original BAGEL state machine.
 
         NOTE: Energon dataloader calls this method internally if packing is used.
         Please see https://nvidia.github.io/Megatron-Energon/advanced/packing.html
@@ -203,22 +243,30 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         prefer_buffer_before = self.data_config.prefer_buffer_before
 
         # --- Step 2: Filter out oversized samples and cache token counts ---
-        valid_samples_que: deque = deque()
         for s in samples:
             token_count = s.num_tokens + 2 * len(s.sequence_plan)
             if token_count <= max_num_tokens_per_sample:
-                valid_samples_que.append((s, token_count))
+                self._pending_samples.append((s, token_count))
 
         # --- Step 3: packing with overflow buffer ---
         packs: list[list[BagelSample]] = []
         while True:
+            if not self._seed_mandatory_samples():
+                break
+
+            if self._current_tokens >= expected_num_tokens:
+                packs.append(self._current_pack)
+                self._current_pack = []
+                self._current_tokens = 0
+                continue
+
             cur_picked_result = None
             from_buffer = False
             if self._current_tokens < prefer_buffer_before and self._overflow_buffer:
                 cur_picked_result = self._overflow_buffer.popleft()
                 from_buffer = True
-            elif valid_samples_que:
-                cur_picked_result = valid_samples_que.popleft()
+            elif self._pending_samples:
+                cur_picked_result = self._pending_samples.popleft()
             elif self._overflow_buffer:
                 cur_picked_result = self._overflow_buffer.popleft()
                 from_buffer = True
@@ -304,8 +352,41 @@ class BagelTaskEncoder(TaskEncoder[dict[str, Any], dict, dict, dict]):
         return batch
 
 
+def _mandatory_tasks_from_metadataset(data_path: str) -> tuple[str, ...]:
+    """Derive required packing tasks from Energon train split metadata."""
+    path = Path(data_path)
+    if not path.is_file():
+        return ()
+
+    with path.open() as stream:
+        metadataset = yaml.safe_load(stream) or {}
+
+    train_split = metadataset.get("splits", {}).get("train", {})
+    entries = train_split.get("blend", train_split.get("datasets", []))
+    mandatory_tasks = []
+    for entry in entries:
+        subflavors = entry.get("subflavors", {})
+        if not subflavors.get("is_mandatory", False):
+            continue
+        task = subflavors.get("task")
+        if not task:
+            raise ValueError(
+                f"mandatory dataset entry in {path} must define subflavors.task"
+            )
+        if task not in mandatory_tasks:
+            mandatory_tasks.append(task)
+
+    return tuple(mandatory_tasks)
+
+
 def bagel_vlm_dataloader_provider(train_val_test_num_samples):
     args = get_args()
+    assert (
+        isinstance(args.data_path, str)
+        or isinstance(args.data_path, list) and len(args.data_path) == 1
+    ), "BAGEL Energon requires exactly one metadataset path"
+    data_path = args.data_path[0] if isinstance(args.data_path, list) else args.data_path
+    mandatory_tasks = _mandatory_tasks_from_metadataset(data_path)
 
     bagel_config = BagelDataConfig(
         text_cond_dropout_prob=getattr(args, "text_cond_dropout_prob", 0.1),
@@ -320,6 +401,7 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples):
         max_num_tokens_per_sample=getattr(args, "max_num_tokens_per_sample", 16384),
         prefer_buffer_before=getattr(args, "prefer_buffer_before", 16384),
         max_buffer_size=getattr(args, "max_buffer_size", 50),
+        mandatory_tasks=mandatory_tasks,
     )
 
     # Log packing configuration from rank 0 for reproducibility.
@@ -331,6 +413,7 @@ def bagel_vlm_dataloader_provider(train_val_test_num_samples):
             f"  max_num_tokens={bagel_config.max_num_tokens}\n"
             f"  expected_num_tokens={bagel_config.expected_num_tokens}\n"
             f"  max_num_tokens_per_sample={bagel_config.max_num_tokens_per_sample}\n"
+            f"  mandatory_tasks={bagel_config.mandatory_tasks}\n"
             f"  packing_buffer_size={getattr(args, 'packing_buffer_size', 12)}"
         )
 

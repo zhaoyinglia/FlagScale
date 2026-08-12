@@ -71,7 +71,7 @@ class T2IHandler(BaseTaskHandler):
             sequence_plan=sequence_plan,
             num_tokens=num_tokens,
             is_mandatory=sample.get("__subflavors__", {}).get("is_mandatory", False),
-            subflavor=sample.get("__subflavors__", {}).get("task", "vlm"),
+            subflavor=sample.get("__subflavors__", {}).get("task", "t2i"),
             __key__=sample.get("__key__", ""),
             __restore_key__=sample.get("__restore_key__", ()),
         )
