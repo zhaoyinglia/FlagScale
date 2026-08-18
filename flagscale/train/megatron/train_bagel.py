@@ -1,6 +1,8 @@
 # Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
 """Pretrain BAGEL multimodal model for unified image understanding and generation."""
 
+import os
+
 import torch
 from megatron.core import parallel_state
 from megatron.core.enums import ModelType
@@ -129,6 +131,24 @@ def train_valid_test_datasets_provider(train_val_test_num_samples):
     return dataset_provider(train_val_test_num_samples)
 
 
+def _load_alignment_batch(path):
+    """Load and validate a CPU-only batch dumped by original BAGEL."""
+    data = torch.load(path, map_location="cpu", weights_only=False)
+    required = {
+        "sequence_length", "sample_lens", "split_lens", "attn_modes",
+        "packed_text_ids", "packed_text_indexes", "packed_position_ids",
+        "packed_latent_clean", "packed_latent_noise",
+        "packed_timesteps_effective",
+    }
+    missing = sorted(required.difference(data))
+    if missing:
+        raise ValueError(f"alignment batch is missing required fields: {missing}")
+    metadata = data.get("_alignment_metadata", {})
+    if metadata.get("source") != "original_bagel":
+        raise ValueError(f"unexpected alignment batch source: {metadata!r}")
+    return data
+
+
 def get_batch(data_iterator):
     """Generate a batch from data iterator.
 
@@ -151,8 +171,12 @@ def get_batch(data_iterator):
     assert (getattr(args, 'pipeline_model_parallel_size', 1) == 1)
     assert (getattr(args, 'tensor_model_parallel_size', 1) == 1)
 
-    data = next(data_iterator)
-    print(f"{data=}")
+    alignment_batch_path = os.getenv("BAGEL_ALIGN_BATCH")
+    if alignment_batch_path:
+        data = _load_alignment_batch(alignment_batch_path)
+    else:
+        data = next(data_iterator)
+    # print(f"{data=}")
 
     # --- Assemble batch dict ---
     batch = {
@@ -179,6 +203,14 @@ def get_batch(data_iterator):
     # --- VAE image generation fields ---
     if 'padded_images' in data:
         batch['padded_images'] = data['padded_images'].cuda(non_blocking=True)
+    if 'padded_latent' in data:
+        batch['padded_latent'] = data['padded_latent'].cuda(non_blocking=True)
+    if 'packed_latent_clean' in data:
+        batch['packed_latent_clean'] = data['packed_latent_clean'].cuda(non_blocking=True)
+    if 'packed_latent_noise' in data:
+        batch['packed_latent_noise'] = data['packed_latent_noise'].cuda(non_blocking=True)
+    if 'packed_timesteps_effective' in data:
+        batch['packed_timesteps_effective'] = data['packed_timesteps_effective'].cuda(non_blocking=True)
     if 'patchified_vae_latent_shapes' in data:
         batch['patchified_vae_latent_shapes'] = data['patchified_vae_latent_shapes']
     if 'packed_latent_position_ids' in data:
@@ -202,7 +234,7 @@ def get_batch(data_iterator):
     if 'mse_loss_indexes' in data:
         batch['mse_loss_indexes'] = data['mse_loss_indexes'].cuda(non_blocking=True)
 
-    print(f"{batch=}")
+    # print(f"{batch=}")
     return batch
 
 
@@ -263,6 +295,10 @@ def forward_step(data_iterator, model: BagelModel):
         vit_token_seqlens=batch.get('vit_token_seqlens'),
         # VAE generation
         padded_images=batch.get('padded_images'),
+        padded_latent=batch.get('padded_latent'),
+        packed_latent_clean=batch.get('packed_latent_clean'),
+        packed_latent_noise=batch.get('packed_latent_noise'),
+        packed_timesteps_effective=batch.get('packed_timesteps_effective'),
         patchified_vae_latent_shapes=batch.get('patchified_vae_latent_shapes'),
         packed_latent_position_ids=batch.get('packed_latent_position_ids'),
         packed_vae_token_indexes=batch.get('packed_vae_token_indexes'),
@@ -319,20 +355,20 @@ def forward_step(data_iterator, model: BagelModel):
         mse = mse.mean(dim=-1).sum() * dp_world_size / total_mse_tokens
         combined_loss = combined_loss + mse * getattr(args, 'mse_weight', 1.0)
 
-    print(f"{ce=}, {mse=}")
+    # print(f"{ce=}, {mse=}")
 
     combined_loss = combined_loss + dummy
 
-    if torch.distributed.get_rank() == 0:
-        print(
-            "[BAGEL_LOSS_GRAPH]",
-            f"ce_shape={None if ce is None else tuple(ce.shape)}",
-            f"ce_grad_fn={None if ce is None else ce.grad_fn}",
-            f"mse_shape={None if mse is None else tuple(mse.shape)}",
-            f"mse_grad_fn={None if mse is None else mse.grad_fn}",
-            f"combined_grad_fn={combined_loss.grad_fn}",
-            flush=True,
-        )
+    # if torch.distributed.get_rank() == 0:
+    #     print(
+    #         "[BAGEL_LOSS_GRAPH]",
+    #         f"ce_shape={None if ce is None else tuple(ce.shape)}",
+    #         f"ce_grad_fn={None if ce is None else ce.grad_fn}",
+    #         f"mse_shape={None if mse is None else tuple(mse.shape)}",
+    #         f"mse_grad_fn={None if mse is None else mse.grad_fn}",
+    #         f"combined_grad_fn={combined_loss.grad_fn}",
+    #         flush=True,
+    #     )
 
     return combined_loss.unsqueeze(0), bagel_loss_func
 
@@ -410,6 +446,22 @@ def add_bagel_extra_args(parser):
         '--ce-loss-reweighting', action='store_true', default=False,
         help='Reweight CE loss using per-token ce_loss_weights.',
     )
+
+    # Random preprocessing controls. Keep these explicit so alignment runs do
+    # not silently fall back to BagelDataConfig defaults.
+    group.add_argument(
+        '--text-cond-dropout-prob', type=float, default=0.0,
+        help='Probability of dropping text conditioning during packing.',
+    )
+    group.add_argument(
+        '--vit-cond-dropout-prob', type=float, default=0.0,
+        help='Probability of dropping ViT conditioning during packing.',
+    )
+    group.add_argument(
+        '--vae-cond-dropout-prob', type=float, default=0.0,
+        help='Probability of dropping VAE conditioning during packing.',
+    )
+
 
     # Freeze controls
     group.add_argument(

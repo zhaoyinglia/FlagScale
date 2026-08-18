@@ -377,10 +377,13 @@ class BagelModel(MegatronModule):
         """
         modules = []
         if freeze_language_model and self.language_model:
+            self.language_model.eval()
             modules.append(self.language_model)
         if freeze_vision_model and self.vision_model is not None:
+            self.vision_model.eval()
             modules.append(self.vision_model)
         if freeze_vae_model and self.vae_model is not None:
+            self.vae_model.eval()
             modules.append(self.vae_model)
         if freeze_text_embed and self.language_model:
             modules.append(self.language_model.embedding.word_embeddings)
@@ -666,6 +669,10 @@ class BagelModel(MegatronModule):
         vit_token_seqlens: Optional[Tensor] = None,
         # VAE generation inputs
         padded_images: Optional[Tensor] = None,
+        # padded_latent: Optional[Tensor] = None,
+        # packed_latent_clean: Optional[Tensor] = None,
+        # packed_latent_noise: Optional[Tensor] = None,
+        # packed_timesteps_effective: Optional[Tensor] = None,
         patchified_vae_latent_shapes: Optional[List] = None,
         packed_latent_position_ids: Optional[Tensor] = None,
         packed_vae_token_indexes: Optional[Tensor] = None,
@@ -702,16 +709,18 @@ class BagelModel(MegatronModule):
                 f"but got {tuple(packed_text_ids.shape)}"
             )
 
+        # print(f"{packed_text_ids.shape=}, {torch.sum(packed_text_ids, dtype=torch.float32)=}, {packed_text_ids=}")
         text_embeddings = self.language_model.embedding(
             input_ids=packed_text_ids, position_ids=packed_position_ids.unsqueeze(0),
         )
-        print(f"{packed_text_ids.shape=}, {text_embeddings.shape=}")
+        # print(f"{packed_text_ids.shape=}, {text_embeddings.shape=}")
 
         # Create the combined sequence tensor
         # For packed sequences: [total_seq, 1, hidden]
         combined_embeddings = text_embeddings.new_zeros(size=(sequence_length, self.language_model.config.hidden_size))
-        print(f"{packed_text_indexes.shape=}, {combined_embeddings.shape=}")
+        # print(f"{packed_text_indexes.shape=}, {combined_embeddings.shape=}")
         combined_embeddings[packed_text_indexes] = text_embeddings.squeeze(1)
+        # print(f"{text_embeddings.shape=}, {torch.sum(text_embeddings, dtype=torch.float32)=}, {text_embeddings=}")
 
         # --- Step 2: Process ViT tokens (understanding path) ---
         has_vision_path = (
@@ -733,18 +742,20 @@ class BagelModel(MegatronModule):
             cu_seqlens = cu_seqlens.to(torch.int32)
             max_seqlen = torch.max(vit_token_seqlens).item()
             # [num_patches, 1, vit_hidden]
-            print(f"{packed_vit_tokens.shape=}, {packed_vit_tokens.shape=}")
+            # print(f"{packed_vit_tokens.shape=}, {packed_vit_tokens.shape=}")
             image_embeddings = self._embed_vision_tokens(
                 pixel_values=packed_vit_tokens,
                 position_ids=packed_vit_position_ids,
                 cu_seqlens=cu_seqlens,
                 max_seqlen=max_seqlen,
             )
-            print(f"{image_embeddings.shape=}")
+            # print(f"after vit {image_embeddings.shape=}, {torch.sum(image_embeddings, dtype=torch.float32)=}, {image_embeddings=}")
+            # print(f"{image_embeddings.shape=}")
 
             if image_embeddings.dtype != combined_embeddings.dtype:
                 image_embeddings = image_embeddings.to(combined_embeddings.dtype)
             combined_embeddings[packed_vit_token_indexes] = image_embeddings.squeeze(1)
+            # print(f"{image_embeddings.shape=}, {torch.sum(image_embeddings, dtype=torch.float32)=}, {image_embeddings=}")
         elif has_vision_path:
             # Keep trainable vision modules in the autograd graph when this
             # microbatch contains no vision-understanding task.
@@ -771,6 +782,8 @@ class BagelModel(MegatronModule):
 
         # --- Step 3: Process VAE latents (generation path) ---
         packed_latent_clean = None
+        packed_latent_noise = None
+        packed_timesteps_effective = None
         noise = None
         processed_timesteps = None
         has_generation_path = (
@@ -783,7 +796,11 @@ class BagelModel(MegatronModule):
         )
         has_gen_tokens = (
             has_generation_path
-            and padded_images is not None
+            and (
+                packed_latent_clean is not None
+                or padded_latent is not None
+                or padded_images is not None
+            )
             and packed_vae_token_indexes is not None
             and packed_vae_token_indexes.numel() > 0
             and patchified_vae_latent_shapes is not None
@@ -791,18 +808,40 @@ class BagelModel(MegatronModule):
             and packed_timesteps is not None
         )
         if has_gen_tokens:
-            vae_dtype = next(self.vae_model.parameters()).dtype
-            padded_latent = self.vae_model.encode(padded_images.to(vae_dtype))
-            packed_latent_clean = self._patchify_vae_latents(
-                padded_latent,
-                patchified_vae_latent_shapes,
-            )
-            packed_latent, noise, processed_timesteps = (
-                self._apply_flow_matching_noise(
-                    packed_latent_clean,
-                    packed_timesteps,
+            if packed_latent_clean is None:
+                if padded_latent is None:
+                    vae_dtype = next(self.vae_model.parameters()).dtype
+                    padded_latent = self.vae_model.encode(padded_images.to(vae_dtype))
+                packed_latent_clean = self._patchify_vae_latents(
+                    padded_latent,
+                    patchified_vae_latent_shapes,
                 )
-            )
+            if packed_latent_noise is not None:
+                noise = packed_latent_noise.to(packed_latent_clean.dtype)
+                if packed_timesteps_effective is None:
+                    processed_timesteps = torch.sigmoid(
+                        packed_timesteps.to(packed_latent_clean.dtype)
+                    )
+                    processed_timesteps = (
+                        self.timestep_shift
+                        * processed_timesteps
+                        / (1 + (self.timestep_shift - 1) * processed_timesteps)
+                    )
+                else:
+                    processed_timesteps = packed_timesteps_effective.to(
+                        packed_latent_clean.dtype
+                    )
+                packed_latent = (
+                    (1 - processed_timesteps[:, None]) * packed_latent_clean
+                    + processed_timesteps[:, None] * noise
+                )
+            else:
+                packed_latent, noise, processed_timesteps = (
+                    self._apply_flow_matching_noise(
+                        packed_latent_clean,
+                        packed_timesteps,
+                    )
+                )
             packed_latent = self._embed_generation_tokens(
                 packed_latent,
                 processed_timesteps,
@@ -811,6 +850,7 @@ class BagelModel(MegatronModule):
             combined_embeddings[packed_vae_token_indexes] = packed_latent.to(
                 combined_embeddings.dtype
             )
+            # print(f"{packed_latent.shape=}, {torch.sum(packed_latent, dtype=torch.float32)=}, {packed_latent=}")
         elif has_generation_path:
             # Match the real generation path with one dummy image so the VAE
             # encoder and all generation-input modules stay in the graph.
@@ -875,7 +915,7 @@ class BagelModel(MegatronModule):
             attn_modes=attn_modes,
             device=combined_embeddings.device,
         )
-        print(f"{packed_und_token_indexes.shape=}")
+        # print(f"{packed_und_token_indexes.shape=}")
 
         # Run through GPTModel with decoder_input (skips embedding)
         hidden_states = self.language_model.decoder(

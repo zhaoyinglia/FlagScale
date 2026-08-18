@@ -155,9 +155,9 @@ class SiglipVisionModel(VisionModule):
             x = x + self.position_embeddings(packed_flattened_position_ids)
 
         # Reshape for TransformerBlock: [seq_len, batch=1, hidden_size]
-        x = x.unsqueeze(1)
+        x = x.unsqueeze(1).contiguous()
 
-        print(f"{cu_seqlens=}, {max_seqlen=}")
+        # print(f"{cu_seqlens=}, {max_seqlen=}")
         # Build PackedSeqParams for variable-length attention
         packed_seq_params = PackedSeqParams(
             cu_seqlens_q=cu_seqlens,
@@ -167,8 +167,9 @@ class SiglipVisionModel(VisionModule):
             max_seqlen_kv=max_seqlen,
         )
 
-        print(f"{x.shape=}")
+        # print(f"{x.shape=}")
         # Transformer forward
+        # print(f"before encoder: {x.shape=}, {torch.sum(x, dtype=torch.float32)=}, {x=}, {packed_seq_params=}")
         x = self.decoder(
             hidden_states=x,
             attention_mask=None,
