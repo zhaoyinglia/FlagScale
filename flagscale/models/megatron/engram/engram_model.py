@@ -139,16 +139,6 @@ class EngramModel(GPTModel):
             inference_context=inference_context,
         )
 
-    def sharded_state_dict(
-        self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None
-    ):
-        if metadata is None:
-            metadata = {}
-        metadata["non_homogeneous_layers"] = True
-        return super().sharded_state_dict(
-            prefix=prefix, sharded_offsets=sharded_offsets, metadata=metadata
-        )
-
     def build_schedule_plan(
         self,
         input_ids: Tensor,
@@ -185,3 +175,13 @@ class EngramModel(GPTModel):
             loss_mask=loss_mask,
             extra_block_kwargs=extra_block_kwargs
         )
+
+    def sharded_state_dict(
+        self, prefix: str = "", sharded_offsets: tuple = (), metadata: dict | None = None
+    ):
+        # Engram makes the layers non-homogeneous, so force the sharded-state-dict path
+        # to use layer-specific keys.
+        if metadata is None:
+            metadata = {}
+        metadata["non_homogeneous_layers"] = True
+        return super().sharded_state_dict(prefix=prefix, sharded_offsets=sharded_offsets, metadata=metadata)
