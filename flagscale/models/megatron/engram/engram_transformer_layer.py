@@ -97,7 +97,6 @@ class EngramTransformerLayer(TransformerLayer):
             sequence_len_offset=sequence_len_offset,
             padding_mask=padding_mask,
             input_ids=input_ids,
-            mhc_recompute_manager=mhc_recompute_manager,
             inference_params=inference_params,
         )
     
