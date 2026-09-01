@@ -106,6 +106,7 @@ class DeepSeekModel(GPTModel):
         if self.config.moe_n_hash_layers > 0 and input_ids is not None:
             decoder_extra_block_kwargs['input_ids'] = input_ids
         if self.config.use_engram:
+            decoder_extra_block_kwargs['engram_hash_input_ids'] = engram_hash_input_ids
             for layer in self.decoder.layers:
                 if getattr(layer, "is_engram_layer", False):
                     layer._deepseek_engram_hash_input_ids = engram_hash_input_ids
