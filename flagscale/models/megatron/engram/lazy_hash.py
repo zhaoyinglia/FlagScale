@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections.abc import Mapping
+
 import torch
 
 from megatron.plugin.platform import get_platform
@@ -63,3 +65,10 @@ class LazyHashInputIds:
             return self[key]
         except KeyError:
             return default
+
+
+def get_layer_hash_input_ids(hash_input_ids, layer_id):
+    """Resolve a lazy or mapped hash input to the tensor for one Engram layer."""
+    if isinstance(hash_input_ids, (LazyHashInputIds, Mapping)):
+        return hash_input_ids[layer_id]
+    return hash_input_ids
