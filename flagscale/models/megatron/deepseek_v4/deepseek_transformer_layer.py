@@ -24,8 +24,6 @@ from megatron.core.transformer.transformer_layer import (
     TransformerLayerSubmodules,
 )
 
-from flagscale.models.megatron.engram.lazy_hash import get_layer_hash_input_ids
-
 logger = logging.getLogger(__name__)
 
 
@@ -110,11 +108,8 @@ class DeepSeekTransformerLayer(HyperConnectionTransformerLayer):
         """Apply DeepSeek engram before the parent attention path."""
         if self.is_engram_layer:
             nvtx_range_push(suffix="engram")
-            hash_input_ids = get_layer_hash_input_ids(
-                self._deepseek_engram_hash_input_ids, self.engram_layer_id
-            )
             hidden_states = (
-                self.engram(hidden_states, hash_input_ids)
+                self.engram(hidden_states, self._deepseek_engram_hash_input_ids)
                 + hidden_states
             )
             nvtx_range_pop(suffix="engram")
@@ -141,9 +136,7 @@ class DeepSeekTransformerLayer(HyperConnectionTransformerLayer):
     def pre_compute_embedding(self, engram_hash_input_ids):
         if not self.is_engram_layer or isinstance(self.engram, IdentityOp):
             return
-        hash_input_ids = get_layer_hash_input_ids(
-            engram_hash_input_ids, self.engram_layer_id
-        )
+        hash_input_ids = engram_hash_input_ids[self.engram_layer_id]
         self.engram.pre_compute_embedding(hash_input_ids)
 
     def sharded_state_dict(

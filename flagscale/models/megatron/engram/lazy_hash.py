@@ -12,8 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Mapping
-
 import torch
 
 from megatron.plugin.platform import get_platform
@@ -67,8 +65,7 @@ class LazyHashInputIds:
             return default
 
 
-def get_layer_hash_input_ids(hash_input_ids, layer_id):
-    """Resolve a lazy or mapped hash input to the tensor for one Engram layer."""
-    if isinstance(hash_input_ids, (LazyHashInputIds, Mapping)):
-        return hash_input_ids[layer_id]
-    return hash_input_ids
+def pre_compute_first_local_engram_layer(decoder, engram_hash_input_ids):
+    """Pre-compute Engram embeddings when the first local layer has no predecessor."""
+    if decoder.layers and getattr(decoder.layers[0], "is_engram_layer", False):
+        decoder.layers[0].pre_compute_embedding(engram_hash_input_ids)

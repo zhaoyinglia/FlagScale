@@ -24,8 +24,6 @@ from megatron.core.utils import nvtx_range_pop, nvtx_range_push
 
 from megatron.core.transformer.engram import EngramModule 
 
-from .lazy_hash import get_layer_hash_input_ids
-
 
 class EngramTransformerLayer(TransformerLayer):
     def __init__(self, *args, **kwargs):
@@ -78,11 +76,8 @@ class EngramTransformerLayer(TransformerLayer):
     ):
         if self.is_engram_layer:
             nvtx_range_push(suffix="engram")
-            hash_input_ids = get_layer_hash_input_ids(
-                self._deepseek_engram_hash_input_ids, self.engram_layer_id
-            )
             hidden_states = (
-                self.engram(hidden_states, hash_input_ids)
+                self.engram(hidden_states, self._deepseek_engram_hash_input_ids)
                 + hidden_states
             )
             nvtx_range_pop(suffix="engram")
@@ -108,9 +103,7 @@ class EngramTransformerLayer(TransformerLayer):
     def pre_compute_embedding(self, engram_hash_input_ids):
         if not self.is_engram_layer or isinstance(self.engram, IdentityOp):
             return
-        hash_input_ids = get_layer_hash_input_ids(
-            engram_hash_input_ids, self.engram_layer_id
-        )
+        hash_input_ids = engram_hash_input_ids[self.engram_layer_id]
         self.engram.pre_compute_embedding(hash_input_ids)
 
     def sharded_state_dict(

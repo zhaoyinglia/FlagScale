@@ -29,7 +29,10 @@ from megatron.core.utils import deprecate_inference_params
 from megatron.core.transformer.engram import get_or_create_hash_mapping
 
 ## engram
-from flagscale.models.megatron.engram.lazy_hash import LazyHashInputIds
+from flagscale.models.megatron.engram.lazy_hash import (
+    LazyHashInputIds,
+    pre_compute_first_local_engram_layer,
+)
 
 cur_platform = get_platform()
 
@@ -102,9 +105,9 @@ class EngramModel(GPTModel):
             decoder_extra_block_kwargs['input_ids'] = input_ids
         if self.config.use_engram:
             decoder_extra_block_kwargs['engram_hash_input_ids'] = engram_hash_input_ids
-            for layer in self.decoder.layers:
-                if getattr(layer, "is_engram_layer", False):
-                    layer._deepseek_engram_hash_input_ids = engram_hash_input_ids
+            pre_compute_first_local_engram_layer(
+                self.decoder, engram_hash_input_ids
+            )
 
         # torch.cuda.nvtx.range_push("EngramModel decoder")
         # Run decoder
@@ -165,10 +168,9 @@ class EngramModel(GPTModel):
             input_ids=input_ids,
             hash_stream=self._hash_stream,
         )
-        if extra_block_kwargs is None:
-            extra_block_kwargs = {
-                "engram_hash_input_ids": engram_hash_input_ids,
-            }
+        pre_compute_first_local_engram_layer(self.decoder, engram_hash_input_ids)
+        extra_block_kwargs = dict(extra_block_kwargs or {})
+        extra_block_kwargs["engram_hash_input_ids"] = engram_hash_input_ids
         return super().build_schedule_plan(
             input_ids,
             position_ids,
