@@ -7,16 +7,16 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 DETAIL_FIELDS = [
-    "custom_operator", "operator_name", "kernel_name", "variant_index", "mapping_status",
+    "custom_operator", "execution_operator", "kernel_name", "variant_index", "mapping_status",
     "input_shapes", "input_dtypes", "candidate_operators",
     "kernel_event_count", "kernel_time_us",
 ]
 SUMMARY_FIELDS = [
-    "custom_operator", "operator_name", "kernel_name", "kernel_call_count",
+    "custom_operator", "execution_operator", "kernel_name", "kernel_call_count",
     "kernel_time_us", "percent",
 ]
 OPERATOR_FIELDS = [
-    "operator_id", "custom_operator", "operator_name", "operator_kind", "kernel_name",
+    "operator_id", "custom_operator", "execution_operator", "operator_kind", "kernel_name",
 ]
 
 # These are backend/library identities, not generic tensor operation names. Keep
@@ -38,6 +38,10 @@ NON_COMPUTE_EVENT_NAMES = {
     "Runtime Triggered Module Loading",
 }
 TORCH_COMPILE_PREFIXES = ("triton_", "CompiledFunction")
+EXECUTION_BACKENDS = {
+    "cuBLASLt", "cuBLAS", "CUTLASS", "TransformerEngine", "Triton",
+    "FlashAttention", "cuDNN", "CUDA",
+}
 FRAMEWORK_OPERATOR_PREFIXES = (
     "aten::", "autograd::", "torch::", "prims::", "ProfilerStep#",
     "TorchDynamo ", "Torch-Compiled Region", "CompiledFunction", "triton_",
@@ -129,9 +133,40 @@ def _is_non_compute(operator_name, kernel_name, cpu_operator_names):
     return any(marker in kernel for marker in NON_COMPUTE_KERNEL_MARKERS)
 
 
+def _kernel_backend(kernel_name):
+    """Infer a stable implementation backend from an observed kernel name."""
+    name = kernel_name.lower()
+    if "nvjet" in name or "cublaslt" in name:
+        return "cuBLASLt"
+    if "cutlass" in name:
+        return "CUTLASS"
+    if "transformer_engine" in name:
+        return "TransformerEngine"
+    if "triton" in name:
+        return "Triton"
+    if any(marker in name for marker in ("flash_attn", "flashattention", "fmha")):
+        return "FlashAttention"
+    if "cudnn" in name:
+        return "cuDNN"
+    if "cublas" in name:
+        return "cuBLAS"
+    return "CUDA"
+
+
+def _execution_operator(custom_operator, operator_name, kernel_name):
+    """Use an observed inner ATen op, otherwise the inferred kernel backend."""
+    if custom_operator == "null":
+        return operator_name
+    if custom_operator != operator_name and operator_name.startswith("aten::"):
+        return operator_name
+    return _kernel_backend(kernel_name)
+
+
 def _operator_kind(name):
     if name == "null":
         return "unattributed"
+    if name in EXECUTION_BACKENDS:
+        return "backend"
     if name.startswith("aten::"):
         return "aten"
     if name.startswith(TORCH_COMPILE_PREFIXES):
@@ -189,22 +224,23 @@ def build_kernel_report_rows(events, trace_path=None):
             ):
                 continue
             duration = _duration_us(kernel)
-            variants[(custom_operator, operator, name, shapes, dtypes)][0] += 1
-            variants[(custom_operator, operator, name, shapes, dtypes)][1] += duration
-            summaries[(custom_operator, operator, name)][0] += 1
-            summaries[(custom_operator, operator, name)][1] += duration
+            execution_operator = _execution_operator(custom_operator, operator, name)
+            variants[(custom_operator, execution_operator, name, shapes, dtypes)][0] += 1
+            variants[(custom_operator, execution_operator, name, shapes, dtypes)][1] += duration
+            summaries[(custom_operator, execution_operator, name)][0] += 1
+            summaries[(custom_operator, execution_operator, name)][1] += duration
 
     grouped = defaultdict(list)
-    for (custom, operator, kernel, shapes, dtypes), (count, duration) in variants.items():
-        grouped[(custom, operator, kernel)].append((shapes, dtypes, count, duration))
+    for (custom, execution, kernel, shapes, dtypes), (count, duration) in variants.items():
+        grouped[(custom, execution, kernel)].append((shapes, dtypes, count, duration))
 
     details = []
-    for (custom, operator, kernel), items in sorted(grouped.items()):
+    for (custom, execution, kernel), items in sorted(grouped.items()):
         items.sort(key=lambda item: (-item[3], item[0], item[1]))
         for index, (shapes, dtypes, count, duration) in enumerate(items, 1):
             details.append({
                 "custom_operator": custom,
-                "operator_name": operator,
+                "execution_operator": execution,
                 "kernel_name": kernel,
                 "variant_index": index,
                 "mapping_status": "operator_shape_matched",
@@ -217,12 +253,12 @@ def build_kernel_report_rows(events, trace_path=None):
 
     total = sum(item[1] for item in summaries.values())
     summary = []
-    for (custom, operator, kernel), (count, duration) in sorted(
+    for (custom, execution, kernel), (count, duration) in sorted(
         summaries.items(), key=lambda item: (-item[1][1], item[0])
     ):
         summary.append({
             "custom_operator": custom,
-            "operator_name": operator,
+            "execution_operator": execution,
             "kernel_name": kernel,
             "kernel_call_count": count,
             "kernel_time_us": _time(duration),
@@ -234,12 +270,12 @@ def build_kernel_report_rows(events, trace_path=None):
 def build_operator_rows(summary_rows):
     """List unique operator-to-kernel mappings using stable grouped IDs."""
     pairs = {
-        (row["custom_operator"], row["operator_name"], row["kernel_name"])
+        (row["custom_operator"], row["execution_operator"], row["kernel_name"])
         for row in summary_rows
     }
     kind_order = {
-        "aten": 0, "custom": 1, "runtime_operator": 2,
-        "torch_compile": 3, "unattributed": 4,
+        "aten": 0, "backend": 1, "custom": 2, "runtime_operator": 3,
+        "torch_compile": 4, "unattributed": 5,
     }
     pairs = sorted(
         pairs,
@@ -253,7 +289,7 @@ def build_operator_rows(summary_rows):
         rows.append({
             "operator_id": operator_ids[operator_key],
             "custom_operator": custom,
-            "operator_name": operator,
+            "execution_operator": operator,
             "operator_kind": _operator_kind(operator),
             "kernel_name": kernel,
         })
