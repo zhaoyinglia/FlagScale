@@ -7,20 +7,25 @@ from collections import defaultdict, deque
 from pathlib import Path
 
 DETAIL_FIELDS = [
-    "operator_name", "kernel_name", "variant_index", "mapping_status",
+    "custom_operator", "operator_name", "kernel_name", "variant_index", "mapping_status",
     "input_shapes", "input_dtypes", "candidate_operators",
     "kernel_event_count", "kernel_time_us",
 ]
 SUMMARY_FIELDS = [
-    "operator_name", "kernel_name", "kernel_call_count", "kernel_time_us", "percent",
+    "custom_operator", "operator_name", "kernel_name", "kernel_call_count",
+    "kernel_time_us", "percent",
 ]
-OPERATOR_FIELDS = ["operator_id", "operator_name", "operator_kind", "kernel_name"]
+OPERATOR_FIELDS = [
+    "operator_id", "custom_operator", "operator_name", "operator_kind", "kernel_name",
+]
 
 # These are backend/library identities, not generic tensor operation names. Keep
 # them centralized so support for another communication backend is a data-only change.
 COMMUNICATION_OPERATOR_MARKERS = (
     "record_param_comms", "torch.distributed", "distributed::", "_c10d", "c10d::",
-    "symm_mem::", "custom_ar::", "processgroup", "alltoall_dispatch",
+    "symm_mem::", "custom_ar::", "processgroup", "allreduce", "all_reduce",
+    "allgather", "all_gather", "reducescatter", "reduce_scatter", "alltoall",
+    "all_to_all", "sendrecv", "sequenceparallelregion",
 )
 COMMUNICATION_KERNEL_MARKERS = (
     "nccl", "rccl", "hccl", "oneccl", "custom_all_reduce", "cross_device_reduce",
@@ -33,33 +38,15 @@ NON_COMPUTE_EVENT_NAMES = {
     "Runtime Triggered Module Loading",
 }
 TORCH_COMPILE_PREFIXES = ("triton_", "CompiledFunction")
+FRAMEWORK_OPERATOR_PREFIXES = (
+    "aten::", "autograd::", "torch::", "prims::", "ProfilerStep#",
+    "TorchDynamo ", "Torch-Compiled Region", "CompiledFunction", "triton_",
+)
 
 
 def _json_field(value):
     value = [] if value in (None, "") else value
     return json.dumps(value, separators=(",", ":"), ensure_ascii=False)
-
-
-def _load_trace_metadata(trace_path):
-    """Load CPU-op names and dtype occurrences from a Kineto Chrome trace."""
-    if trace_path is None:
-        return None, {}
-    opener = gzip.open if str(trace_path).endswith(".gz") else open
-    with opener(trace_path, "rt", encoding="utf-8") as trace_file:
-        trace = json.load(trace_file)
-
-    cpu_operator_names = set()
-    input_dtypes = defaultdict(deque)
-    for event in trace.get("traceEvents", ()):
-        if event.get("cat") != "cpu_op" or event.get("ph") != "X":
-            continue
-        name = str(event.get("name", ""))
-        cpu_operator_names.add(name)
-        args = event.get("args", {})
-        if "Input type" in args:
-            key = (name, _json_field(args.get("Input Dims")))
-            input_dtypes[key].append(args["Input type"])
-    return cpu_operator_names, input_dtypes
 
 
 def _is_communication(operator_name, kernel_name):
@@ -68,6 +55,67 @@ def _is_communication(operator_name, kernel_name):
     return any(marker in operator for marker in COMMUNICATION_OPERATOR_MARKERS) or any(
         marker in kernel for marker in COMMUNICATION_KERNEL_MARKERS
     )
+
+
+def _is_custom_operator(name):
+    """Return whether a CPU op is a useful custom-operation boundary."""
+    if not name or name.startswith(FRAMEWORK_OPERATOR_PREFIXES):
+        return False
+    if name.endswith(("Backward0", "Backward1")) or _is_communication(name, ""):
+        return False
+    return (
+        name.startswith("_")
+        or name.endswith(("Function", "FunctionBackward"))
+        or (name[0].isupper() and " " not in name and "::" not in name)
+    )
+
+
+def _load_trace_metadata(trace_path):
+    """Load CPU-op metadata and nearest custom parents from a Kineto trace."""
+    if trace_path is None:
+        return None, {}, {}
+    opener = gzip.open if str(trace_path).endswith(".gz") else open
+    with opener(trace_path, "rt", encoding="utf-8") as trace_file:
+        trace = json.load(trace_file)
+
+    cpu_events = []
+    cpu_operator_names = set()
+    input_dtypes = defaultdict(deque)
+    for event in trace.get("traceEvents", ()):
+        if event.get("cat") != "cpu_op" or event.get("ph") != "X":
+            continue
+        name = str(event.get("name", ""))
+        cpu_operator_names.add(name)
+        cpu_events.append(event)
+        args = event.get("args", {})
+        if "Input type" in args:
+            key = (name, _json_field(args.get("Input Dims")))
+            input_dtypes[key].append(args["Input type"])
+
+    custom_parents = defaultdict(deque)
+    events_by_thread = defaultdict(list)
+    for event in cpu_events:
+        events_by_thread[(event.get("pid"), event.get("tid"))].append(event)
+    for events in events_by_thread.values():
+        events.sort(key=lambda event: (event["ts"], -event.get("dur", 0.0)))
+        stack = []
+        for event in events:
+            start = event["ts"]
+            end = start + event.get("dur", 0.0)
+            while stack and (start >= stack[-1][1] or end > stack[-1][1]):
+                stack.pop()
+            name = str(event.get("name", ""))
+            shapes = _json_field(event.get("args", {}).get("Input Dims"))
+            custom_parent = name if _is_custom_operator(name) else "null"
+            if custom_parent == "null":
+                for parent, _ in reversed(stack):
+                    parent_name = str(parent.get("name", ""))
+                    if _is_custom_operator(parent_name):
+                        custom_parent = parent_name
+                        break
+            custom_parents[(name, shapes)].append(custom_parent)
+            stack.append((event, end))
+    return cpu_operator_names, input_dtypes, custom_parents
 
 
 def _is_non_compute(operator_name, kernel_name, cpu_operator_names):
@@ -88,6 +136,8 @@ def _operator_kind(name):
         return "aten"
     if name.startswith(TORCH_COMPILE_PREFIXES):
         return "torch_compile"
+    if _is_custom_operator(name):
+        return "custom"
     if "::" in name:
         return "custom"
     return "runtime_operator"
@@ -110,7 +160,7 @@ def build_kernel_report_rows(events, trace_path=None):
     """Build detailed and summary rows from ``torch.profiler`` events."""
     variants = defaultdict(lambda: [0, 0.0])
     summaries = defaultdict(lambda: [0, 0.0])
-    cpu_operator_names, trace_dtypes = _load_trace_metadata(trace_path)
+    cpu_operator_names, trace_dtypes, trace_custom_parents = _load_trace_metadata(trace_path)
 
     for event in events:
         if getattr(event, "is_user_annotation", False):
@@ -121,9 +171,12 @@ def build_kernel_report_rows(events, trace_path=None):
             or getattr(event, "input_shapes", None)
         )
         dtype_queue = trace_dtypes.get((operator, shapes))
+        trace_event_dtypes = dtype_queue.popleft() if dtype_queue else None
+        custom_parent_queue = trace_custom_parents.get((operator, shapes))
+        custom_operator = custom_parent_queue.popleft() if custom_parent_queue else "null"
         event_dtypes = getattr(event, "input_dtypes", None)
-        if not event_dtypes and dtype_queue:
-            event_dtypes = dtype_queue.popleft()
+        if not event_dtypes and trace_event_dtypes:
+            event_dtypes = trace_event_dtypes
         kernels = getattr(event, "kernels", None) or ()
         if not kernels:
             continue
@@ -136,20 +189,21 @@ def build_kernel_report_rows(events, trace_path=None):
             ):
                 continue
             duration = _duration_us(kernel)
-            variants[(operator, name, shapes, dtypes)][0] += 1
-            variants[(operator, name, shapes, dtypes)][1] += duration
-            summaries[(operator, name)][0] += 1
-            summaries[(operator, name)][1] += duration
+            variants[(custom_operator, operator, name, shapes, dtypes)][0] += 1
+            variants[(custom_operator, operator, name, shapes, dtypes)][1] += duration
+            summaries[(custom_operator, operator, name)][0] += 1
+            summaries[(custom_operator, operator, name)][1] += duration
 
     grouped = defaultdict(list)
-    for (operator, kernel, shapes, dtypes), (count, duration) in variants.items():
-        grouped[(operator, kernel)].append((shapes, dtypes, count, duration))
+    for (custom, operator, kernel, shapes, dtypes), (count, duration) in variants.items():
+        grouped[(custom, operator, kernel)].append((shapes, dtypes, count, duration))
 
     details = []
-    for (operator, kernel), items in sorted(grouped.items()):
+    for (custom, operator, kernel), items in sorted(grouped.items()):
         items.sort(key=lambda item: (-item[3], item[0], item[1]))
         for index, (shapes, dtypes, count, duration) in enumerate(items, 1):
             details.append({
+                "custom_operator": custom,
                 "operator_name": operator,
                 "kernel_name": kernel,
                 "variant_index": index,
@@ -163,10 +217,11 @@ def build_kernel_report_rows(events, trace_path=None):
 
     total = sum(item[1] for item in summaries.values())
     summary = []
-    for (operator, kernel), (count, duration) in sorted(
+    for (custom, operator, kernel), (count, duration) in sorted(
         summaries.items(), key=lambda item: (-item[1][1], item[0])
     ):
         summary.append({
+            "custom_operator": custom,
             "operator_name": operator,
             "kernel_name": kernel,
             "kernel_call_count": count,
@@ -178,20 +233,26 @@ def build_kernel_report_rows(events, trace_path=None):
 
 def build_operator_rows(summary_rows):
     """List unique operator-to-kernel mappings using stable grouped IDs."""
-    pairs = {(row["operator_name"], row["kernel_name"]) for row in summary_rows}
+    pairs = {
+        (row["custom_operator"], row["operator_name"], row["kernel_name"])
+        for row in summary_rows
+    }
     kind_order = {
         "aten": 0, "custom": 1, "runtime_operator": 2,
         "torch_compile": 3, "unattributed": 4,
     }
     pairs = sorted(
-        pairs, key=lambda pair: (kind_order[_operator_kind(pair[0])], pair[0], pair[1])
+        pairs,
+        key=lambda pair: (kind_order[_operator_kind(pair[1])], pair[0], pair[1], pair[2]),
     )
     operator_ids = {}
     rows = []
-    for operator, kernel in pairs:
-        operator_ids.setdefault(operator, len(operator_ids) + 1)
+    for custom, operator, kernel in pairs:
+        operator_key = (custom, operator)
+        operator_ids.setdefault(operator_key, len(operator_ids) + 1)
         rows.append({
-            "operator_id": operator_ids[operator],
+            "operator_id": operator_ids[operator_key],
+            "custom_operator": custom,
             "operator_name": operator,
             "operator_kind": _operator_kind(operator),
             "kernel_name": kernel,
