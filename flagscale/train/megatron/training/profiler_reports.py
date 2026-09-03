@@ -47,6 +47,61 @@ FRAMEWORK_OPERATOR_PREFIXES = (
     "TorchDynamo ", "Torch-Compiled Region", "CompiledFunction", "triton_",
 )
 
+# Profiler-visible autograd classes scanned from TE-FL 21b4b4b1. Keep the full
+# inventory auditable, then exclude infrastructure and metadata-only helpers.
+TE_AUTOGRAD_FUNCTIONS = frozenset({
+    "AttnFuncFL", "FP8EmulationFunc", "_PrepareQKVForFA", "FusedAttnFunc",
+    "AttnFuncWithCPAndKVP2P", "AttnFuncWithCPAndKVAllGather",
+    "AttnFuncWithCPAndQKVOA2A", "FusedAttentionWithScoreModFunc",
+    "ScaledUpperTriangMaskedSoftmax", "ScaledAlignedCausalMaskedSoftmax",
+    "ScaledMaskedSoftmax", "ScaledSoftmax", "PackTensors", "UnpackTensor",
+    "ConvertTHDtoBSHD", "ConvertBSHDtoTHD", "FusedRoPEFunc", "FusedQKVRoPEFunc",
+    "CrossEntropyFunction", "_Fp8Padding", "_Fp8Unpadding", "_GroupedLinear",
+    "_LayerNormLinear", "_LayerNormMLP", "_Linear",
+    "_OperationFuserAutogradFunction", "FusedTopkScoreFunction",
+    "FusedComputeScoresForMoEAuxLoss", "FusedAuxLoss", "_QuantizeFunc",
+    "_FromFloat8Func", "_FromMXFP8Func", "_FromNVFP4Func", "mHCProjectionOp",
+    "mHCScaleFusedOp", "mHCSinkhornOp", "mHCAggregateOp",
+    "mHCExpandCombineOp", "SplitAlongDim", "AllGatherFunc",
+    "GroupCommitFunction", "_CheckpointFunction", "_EpDispatch", "_EpCombine",
+    "Graphed", "_NoopCatFunc", "_IdentityFunc", "_ViewFunc", "_ReshapeFunc",
+    "_GroupedIdentityFunc",
+})
+TE_NON_COMPUTE_AUTOGRAD_FUNCTIONS = frozenset({
+    "AllGatherFunc", "GroupCommitFunction", "_CheckpointFunction", "_EpDispatch",
+    "_EpCombine", "Graphed", "_NoopCatFunc", "_IdentityFunc", "_ViewFunc",
+    "_ReshapeFunc", "_GroupedIdentityFunc",
+})
+TE_CUSTOM_AUTOGRAD_FUNCTIONS = (
+    TE_AUTOGRAD_FUNCTIONS - TE_NON_COMPUTE_AUTOGRAD_FUNCTIONS
+)
+
+# Profiler-visible compute boundaries from the Megatron main revision used by FlagScale.
+MEGATRON_CUSTOM_AUTOGRAD_FUNCTIONS = frozenset({
+    "BiasGeGLUFunction", "GeGLUFunction", "WeightedQuickGeGLUFunction",
+    "WeightedBiasQuickGeGLUFunction", "GeLUFunction", "BiasSwiGLUFunction",
+    "SwiGLUFunction", "WeightedSwiGLUFunction", "_VocabParallelCrossEntropy",
+    "_VocabParallelCrossEntropyChunked", "IndicesToMultihot", "TritonFusedSinkhorn",
+    "CutileSinkhornKnopp", "CutileHAggregate", "CutileProjRms",
+    "CutileProjRmsComputeH", "FusedHAggregate", "FusedHPostBDA",
+    "_FusedMLARoPEInplace", "_FusedMLARoPEKVSplit",
+    "WeightedSquaredReLUFunction", "LinearWithFrozenWeight",
+    "LinearWithGradAccumulationAndAsyncCommunication",
+    "LinearWithGradAccumulationAndAsyncCommunicationKunlunxin",
+    "BatchInvariantTEGemmFn", "BatchInvariantRMSNormFn", "FusedDSAIndexerLoss",
+    "SparseAttnFunc", "FusedIndexerSparseAttnFunc", "_DSASparseAttnFunc",
+    "SinkhornKnopp", "BroadcastTensorFused", "RandomSTE", "RandomSTEShared",
+    "RouterGatingLinearFunction", "RotaryPositionalEmbeddingWithFreqFunction",
+})
+
+CUSTOM_AUTOGRAD_FUNCTIONS = (
+    TE_CUSTOM_AUTOGRAD_FUNCTIONS | MEGATRON_CUSTOM_AUTOGRAD_FUNCTIONS
+)
+CUSTOM_OPERATOR_NAMES = CUSTOM_AUTOGRAD_FUNCTIONS | frozenset(
+    f"{name}Backward" for name in CUSTOM_AUTOGRAD_FUNCTIONS
+)
+CUSTOM_OPERATOR_PREFIXES = ("te_moe::", "tex::")
+
 
 def _json_field(value):
     value = [] if value in (None, "") else value
@@ -62,16 +117,12 @@ def _is_communication(operator_name, kernel_name):
 
 
 def _is_custom_operator(name):
-    """Return whether a CPU op is a useful custom-operation boundary."""
+    """Return whether a CPU op is a known custom compute boundary."""
     if not name or name.startswith(FRAMEWORK_OPERATOR_PREFIXES):
         return False
-    if name.endswith(("Backward0", "Backward1")) or _is_communication(name, ""):
+    if _is_communication(name, ""):
         return False
-    return (
-        name.startswith("_")
-        or name.endswith(("Function", "FunctionBackward"))
-        or (name[0].isupper() and " " not in name and "::" not in name)
-    )
+    return name in CUSTOM_OPERATOR_NAMES or name.startswith(CUSTOM_OPERATOR_PREFIXES)
 
 
 def _load_trace_metadata(trace_path):
