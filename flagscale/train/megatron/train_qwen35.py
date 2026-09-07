@@ -95,7 +95,8 @@ IGNORE_IDX = -100
 
 
 def model_provider(
-    pre_process=True, post_process=True, add_encoder=True, add_decoder=True, **kwargs
+    pre_process=True, post_process=True, add_encoder=True, add_decoder=True,
+    vp_stage=None, config=None, pg_collection=None, **kwargs
 ) -> Union[Qwen35Model]:
     """Provide a Qwen3.5 model instance."""
     args = get_args()
@@ -120,7 +121,8 @@ def model_provider(
         torch._C._cuda_attach_out_of_memory_observer(oom_observer)
 
     # Build transformer config with Qwen35 config class
-    config = core_transformer_config_from_args(args, Qwen35TransformerConfig)
+    if config is None:
+        config = core_transformer_config_from_args(args, Qwen35TransformerConfig)
     # Qwen3.5 uses zero-centered gamma for RMSNorm; override if needed
     # (core_transformer_config_from_args may be affected by apply_layernorm_1p)
     config.layernorm_zero_centered_gamma = getattr(args, 'layernorm_zero_centered_gamma', True)
@@ -149,7 +151,7 @@ def model_provider(
     print_rank_0("building Qwen3.5 model in TE...")
 
     # Language model spec: hybrid GDN + Attention
-    language_layer_spec = get_qwen35_language_model_spec(config)
+    language_layer_spec = get_qwen35_language_model_spec(config, vp_stage=vp_stage)
 
     # Vision model spec (identical to Qwen3-VL)
     if enable_vision:
@@ -194,6 +196,8 @@ def model_provider(
         parallel_output=True,
         language_share_embeddings_and_output_weights=not args.untie_embeddings_and_output_weights,
         mtp_block_spec=mtp_block_spec,
+        vp_stage=vp_stage,
+        pg_collection=pg_collection,
     )
 
     model.freeze(
@@ -282,9 +286,6 @@ def get_batch(
         imgs = None
         videos = None
         image_thw_grids = None
-
-    if data_text.shape[-1] == args.max_padding_length and get_pipeline_model_parallel_rank() == 0:
-        cur_platform.empty_cache()
 
     if enable_vision:
         video_thw_grids = broadcast_data(["video_thw_grids"], data, torch.long)["video_thw_grids"]
@@ -716,6 +717,7 @@ if __name__ == "__main__":
             forward_step,
             process_non_loss_data_func=write_online_eval_to_tensorboard,
             non_loss_data_func=run_online_eval,
+            get_embedding_ranks=get_embedding_ranks,
         )
     else:
         # Text-only mode: use GPT-style dataset (bin/idx)
