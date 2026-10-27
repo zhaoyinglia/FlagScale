@@ -4,11 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-
-MODULE_PATH = (
-    Path(__file__).parents[4]
-    / "flagscale/train/megatron/training/profiler_reports.py"
-)
+MODULE_PATH = Path(__file__).parents[4] / "flagscale/train/megatron/training/profiler_reports.py"
 SPEC = importlib.util.spec_from_file_location("profiler_reports", MODULE_PATH)
 profiler_reports = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(profiler_reports)
@@ -44,9 +40,7 @@ def test_mapping_status_reflects_available_input_metadata():
         "operator_matched_metadata_missing",
     }
     missing = next(
-        row
-        for row in details
-        if row["mapping_status"] == "operator_matched_metadata_missing"
+        row for row in details if row["mapping_status"] == "operator_matched_metadata_missing"
     )
     assert missing["input_shapes"] == "null"
     assert missing["input_dtypes"] == "null"
@@ -142,10 +136,7 @@ def test_external_id_ambiguity_retains_candidates(tmp_path):
 
 def test_trace_parser_streams_across_chunk_boundaries(tmp_path, monkeypatch):
     trace_path = tmp_path / "chunked.json"
-    expected = [
-        {"cat": "cpu_op", "name": f"aten::op_{index}", "args": {}}
-        for index in range(5)
-    ]
+    expected = [{"cat": "cpu_op", "name": f"aten::op_{index}", "args": {}} for index in range(5)]
     trace_path.write_text(json.dumps({"traceEvents": expected}), encoding="utf-8")
     monkeypatch.setattr(profiler_reports, "TRACE_READ_CHUNK_SIZE", 17)
 
@@ -319,9 +310,7 @@ def test_offline_trace_export_preserves_custom_parent_and_unattributed_kernel(
     assert by_kernel["cublas_kernel"]["custom_operator"] == "FusedAttnFunc"
     assert by_kernel["cublas_kernel"]["execution_operator"] == "aten::mm"
     assert by_kernel["unattributed_kernel"]["custom_operator"] == "null"
-    assert by_kernel["unattributed_kernel"]["mapping_status"] == (
-        "missing_external_id"
-    )
+    assert by_kernel["unattributed_kernel"]["mapping_status"] == "missing_external_id"
     diagnostics = json.loads(paths[3].read_text(encoding="utf-8"))
     assert diagnostics["scope"]["rank"] == 4
     assert diagnostics["kernel_event_count"] == 2
@@ -348,12 +337,8 @@ def test_trace_directory_export_processes_all_ranks(tmp_path):
             encoding="utf-8",
         )
 
-    per_rank, cross_rank = profiler_reports.export_kernel_reports_from_trace_dir(
-        tmp_path
-    )
-    repeated_per_rank, _ = profiler_reports.export_kernel_reports_from_trace_dir(
-        tmp_path
-    )
+    per_rank, cross_rank = profiler_reports.export_kernel_reports_from_trace_dir(tmp_path)
+    repeated_per_rank, _ = profiler_reports.export_kernel_reports_from_trace_dir(tmp_path)
 
     assert len(per_rank) == 2
     assert len(repeated_per_rank) == 2
